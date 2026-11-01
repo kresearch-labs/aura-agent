@@ -1,0 +1,13 @@
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Runtime output when Aura runs from the repo root
+/artifacts/
+/engagement/
+.shadow/
+

@@ -1,0 +1,71 @@
+[project]
+name = "aura-agent"
+# the version lives in src/aura_agent/__init__.py (one source, read by hatch)
+dynamic = ["version"]
+description = "Aura — local-first autonomous AI agent that proves its work — any OpenAI-compatible endpoint, zero extra infrastructure"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+keywords = [
+    "ai-agent", "autonomous-agent", "local-first", "llm-agent",
+    "agent-framework", "tool-use", "verification",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "pynacl>=1.6.2",
+    "wcwidth>=0.2.13",
+    # keys live in the OS keychain (keystore.py)
+    "keyring>=25.6.0",
+]
+
+[dependency-groups]
+dev = []
+
+[project.urls]
+Homepage = "https://aura-agent.in"
+Repository = "https://github.com/kresearch-labs/aura-agent"
+
+[project.scripts]
+aura = "aura_agent.cli:main"
+
+[project.optional-dependencies]
+# selftest works without these (deterministic property sample); install
+# them for the randomized property suite: pip install 'aura-agent[test]'
+test = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+]
+web = [
+    "playwright>=1.62.0",
+]
+# reading PDFs from the web (web_crawl); tested with pypdf 6.21
+pdf = [
+    "pypdf>=6.0",
+]
+# the optional AES-256 password vault for keys (`aura keys lock`)
+vault = [
+    "cryptography>=45.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/aura_agent/__init__.py"
+
+# the source archive carries only what a release needs
+[tool.hatch.build.targets.sdist]
+include = ["src/aura_agent", "scripts/install.sh", "scripts/install.ps1",
+           "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aura_agent"]

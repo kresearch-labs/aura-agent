@@ -1,0 +1,197 @@
+# identity.toml — Aura's look: every surface renders from this file.
+# contracts/visual.py validates against it at import, so the constants
+# can't drift.
+[theme]
+schema = "semantic-34"
+base = "aura-dark"
+
+[theme.tokens]
+# 7-token surface ramp
+bg = "#0b0e14"
+panel = "#121b28"
+element = "#18273a"
+border_subtle = "#192e48"
+border = "#3a7ac4"
+border_active = "#4a9eff"
+menu = "#18273a"
+# ink (4)
+text = "#dde5f0"
+text_muted = "#8b98ae"
+text_inverse = "#0b0e14"
+selection_text = "#0b0e14"
+# accent (4)
+accent_primary = "#4a9eff"
+accent_secondary = "#8bc4ff"
+accent_focus = "#4a9eff"
+accent_agent = "#4a9eff"
+# state (4)
+state_error = "#ff6b6b"
+state_warning = "#e8b549"
+state_success = "#3fd68c"
+state_info = "#4a9eff"
+# diff (4)
+diff_added = "#3fd68c"
+diff_removed = "#ff6b6b"
+diff_context = "#7d8aa0"
+diff_hunk = "#4a9eff"
+# syntax (6)
+syntax_keyword = "#4a9eff"
+syntax_string = "#3fd68c"
+syntax_number = "#e8b549"
+syntax_comment = "#7d8aa0"
+syntax_function = "#8bc4ff"
+syntax_type = "#c792ea"
+# moment/charm (3)
+moment_accent = "#4a9eff"
+charm_celebration = "#3fd68c"
+moment_dim = "#7d8aa0"
+# non-color (2) — values are intents, not colors
+thinking_opacity = 0.55
+tier_floor = "T2"
+
+[theme.skins]
+count = 9
+list = [
+  "aura (house dark)", "aura-light", "gruvbox dark", "gruvbox light",
+  "daltonized dark", "daltonized light", "ansi dark", "ansi light",
+  "stillness (T0)",
+]
+dark_only_declaration = false
+
+[glyphs]
+[glyphs.done]
+char = "✓"
+word = "done"
+ascii_twin = "OK"
+sr_word = "done"
+[glyphs.failed]
+char = "✗"
+word = "failed"
+ascii_twin = "X"
+sr_word = "failed"
+[glyphs.needs_you]
+char = "⚠"
+word = "needs-you"
+ascii_twin = "!"
+sr_word = "needs you"
+[glyphs.rail]
+char = "┃"
+word = "transcript"
+ascii_twin = "|"
+sr_word = "transcript"
+[glyphs.scope]
+char = "⊘"
+word = "outside scope"
+ascii_twin = "(x)"
+sr_word = "outside scope"
+[glyphs.finding_unvalidated]
+char = "○"
+word = "unvalidated"
+ascii_twin = "o"
+sr_word = "unvalidated"
+[glyphs.finding_in_check]
+char = "◐"
+word = "in-check"
+ascii_twin = "~"
+sr_word = "in check"
+[glyphs.finding_validated]
+char = "◈"
+word = "validated"
+ascii_twin = "*"
+sr_word = "validated"
+[glyphs.warning]
+char = "△"
+word = "warning"
+ascii_twin = "(!)"
+sr_word = "warning"
+[glyphs.critical]
+char = "!!"
+word = "critical"
+ascii_twin = "!!"
+sr_word = "critical"
+[glyphs.batch]
+char = "×N"
+word = "suppressed repeats"
+ascii_twin = "xN"
+sr_word = "repeated times"
+[glyphs.caret]
+char = "▍"
+word = "streaming"
+ascii_twin = "_"
+sr_word = "streaming"
+[glyphs.pending]
+char = "⋯"
+word = "working"
+ascii_twin = "..."
+sr_word = "in progress"
+[glyphs.prompt_cap]
+char = "╹"
+word = "input focus"
+ascii_twin = "[>]"
+sr_word = "input line"
+
+[words]
+states = ["working", "waiting", "needs-you", "failed", "done"]
+
+[words.forbidden]
+busy = "working"
+running = "working"
+processing = "working"
+thinking = "working"
+pending = "waiting"
+"in progress" = "working"
+hanging = "waiting"
+stuck = "waiting"
+"approval required" = "needs-you"
+"permission prompt" = "needs-you"
+confirmation = "needs-you"
+error = "failed"
+exception = "failed"
+crashed = "failed"
+oops = "failed"
+refused = "failed"
+complete = "done"
+finished = "done"
+success = "done"
+
+[motion]
+tick_ms = 90
+dormancy_s = 30
+shimmer_ms = 30000
+animated_elements = [
+  "gradient-settle (signature, identity surfaces only)",
+  "spinner THINK family",
+  "spinner TOOL family",
+  "stream caret",
+  "shimmer skeleton band",
+  "reasoning pulse",
+  "face state-change",
+]
+full_repaint_events = [
+  "boot", "surface-switch", "modal-open", "modal-close", "tier-change",
+]
+
+[sound]
+default = "S0"
+ladder = ["S0", "S1", "S2", "S3"]
+pack = ["done", "error", "permission", "question", "subagent_done", "default"]
+focus_gated = true
+identity_chime = "verifier-green"
+
+[charm]
+c2_max_per_run = 2
+c3_max_per_run = 6
+cooldown_min = 30
+sacred_surfaces = ["receipt", "error-card", "approval-card", "status-bar", "durable"]
+greeting_banned = true
+face_tick_ms_c3_only = 2500
+
+[banner]
+grammar = "4-marker"
+rows = 4
+gradient_row_index = [0, 0, 1, 1]
+ramp_4stop = ["accent_primary", "accent_primary", "border", "text_muted"]
+shadow_tint = 0.25
+visibility = ["boot-splash", "V02-idle-home"]
+max_seconds = 1
+byte_identical_relaunch = true

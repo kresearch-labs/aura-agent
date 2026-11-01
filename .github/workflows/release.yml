@@ -1,0 +1,221 @@
+# Aura's release. Runs only when a version
+# tag (v0.1.0, v0.2.0rc1 …) is pushed — never on ordinary pushes.
+#
+#   test → build → install-check (Windows, macOS, Linux) → publish + container
+#
+# Every action is pinned to the commit of its release
+# so a moved tag can't change what runs here.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}          # each job asks only for what it needs
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.12.24"  # the same uv the installers pin
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: the tag matches Aura's version
+        shell: bash
+        run: |
+          v=$(python -c "import re;print(re.search(r'^__version__ = \"([^\"]+)\"', open('src/aura_agent/__init__.py').read(), re.M).group(1))")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME but __version__ is $v"; exit 1; }
+      - name: install
+        run: python -m pip install .
+      - name: selftest
+        run: python -m aura_agent selftest
+      - name: unit tests (when the repository has them)
+        if: ${{ hashFiles('tests/**/*.py') != '' }}
+        run: |
+          python -m pip install ".[test]"
+          python -m pytest -q tests
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: ${{ env.UV_VERSION }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: the release's files
+        run: python scripts/make_release.py --uv uv --out dist/release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: dist/release/
+          if-no-files-found: error
+
+  install-check:
+    # the real installers against the built files, served the way GitHub
+    # serves a release: install, run, and refuse a tampered package
+    name: install-check (${{ matrix.os }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: site/good
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: a tampered copy, and a local release server
+        shell: bash
+        run: |
+          cp -r site/good site/bad
+          printf 'X' >> site/bad/aura_agent-*-py3-none-any.whl
+          cd site && nohup python -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &
+          sleep 2
+      - name: install (macOS / Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export AURA_HOME="$RUNNER_TEMP/a/.aura" UV_TOOL_BIN_DIR="$RUNNER_TEMP/a/bin" PATH="$RUNNER_TEMP/a/bin:$PATH"
+          export AURA_RELEASE_URL=http://127.0.0.1:8765/good
+          curl -fsSL "$AURA_RELEASE_URL/install.sh" | sh -s -- --yes --no-setup
+          aura --version
+      - name: tampered package refused (macOS / Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          export AURA_HOME="$RUNNER_TEMP/b/.aura" UV_TOOL_BIN_DIR="$RUNNER_TEMP/b/bin"
+          export AURA_RELEASE_URL=http://127.0.0.1:8765/bad
+          if curl -fsSL "$AURA_RELEASE_URL/install.sh" | sh -s -- --yes --no-setup; then
+            echo "::error::a tampered package was installed"; exit 1; fi
+          [ ! -e "$RUNNER_TEMP/b/bin/aura" ] || { echo "::error::aura exists after a refused install"; exit 1; }
+          echo "refused, nothing installed"
+      - name: install (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:AURA_HOME = "$env:RUNNER_TEMP\a\.aura"; $env:UV_TOOL_BIN_DIR = "$env:RUNNER_TEMP\a\bin"
+          $env:AURA_RELEASE_URL = "http://127.0.0.1:8765/good"
+          $s = (Invoke-WebRequest -UseBasicParsing "$env:AURA_RELEASE_URL/install.ps1").Content
+          if ($s -is [byte[]]) { $s = [Text.Encoding]::UTF8.GetString($s) }
+          & ([scriptblock]::Create($s)) -Yes -NoSetup
+          & "$env:UV_TOOL_BIN_DIR\aura.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "aura doesn't run" }
+      - name: tampered package refused (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:AURA_HOME = "$env:RUNNER_TEMP\b\.aura"; $env:UV_TOOL_BIN_DIR = "$env:RUNNER_TEMP\b\bin"
+          $env:AURA_RELEASE_URL = "http://127.0.0.1:8765/bad"
+          $s = (Invoke-WebRequest -UseBasicParsing "$env:AURA_RELEASE_URL/install.ps1").Content
+          if ($s -is [byte[]]) { $s = [Text.Encoding]::UTF8.GetString($s) }
+          & ([scriptblock]::Create($s)) -Yes -NoSetup
+          if (Test-Path "$env:UV_TOOL_BIN_DIR\aura.exe") { throw "a tampered package was installed" }
+          "refused, nothing installed"
+
+  publish:
+    needs: install-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # create the release
+      id-token: write          # sign (public repositories)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist/release
+      - name: sign the files (public repositories; free plans can't sign private ones)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/release/*
+      - name: the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          pre=""; case "$TAG" in *-*|*a[0-9]*|*b[0-9]*|*rc[0-9]*) pre="--prerelease";; esac
+          {
+            echo "Install or update:"
+            echo
+            echo '- Windows (PowerShell): `irm https://github.com/'"$REPO"'/releases/download/'"$TAG"'/install.ps1 | iex`'
+            echo '- macOS / Linux: `curl -fsSL https://github.com/'"$REPO"'/releases/download/'"$TAG"'/install.sh | sh`'
+            echo '- Already installed: ask Aura to update, or run `aura update`.'
+            echo
+            echo 'Every package is checked against `SHA256SUMS` before it is installed.'
+          } > notes.md
+          gh release create "$TAG" dist/release/* --repo "$REPO" --title "Aura ${TAG#v}" \
+            --notes-file notes.md --verify-tag $pre
+
+  container:
+    needs: install-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # push to ghcr.io
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') && !contains(github.ref_name, 'rc') }}
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: sign the image (public repositories)
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

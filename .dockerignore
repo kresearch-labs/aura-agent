@@ -1,0 +1,12 @@
+# only what the image needs: pyproject.toml, README.md, LICENSE, src/
+.git
+**/__pycache__
+**/*.pyc
+.venv
+venv
+artifacts
+tests
+docs
+*.zip
+*.log
+engagement
