@@ -745,8 +745,14 @@ MAIN_AGENT_TOOLS: list[str] = ['delegate',
  'team_wire_check',
  'team_wire_use',
  'team_chat',
+ 'pblock_propose',
+ 'pblock_train',
  'get',
  'aura_update']
+
+from .editions import teams_present as _teams_present  # noqa: E402
+if not _teams_present():                    # shipped without Aura Teams: no team tools offered
+    MAIN_AGENT_TOOLS = [t for t in MAIN_AGENT_TOOLS if not t.startswith("team_")]
 
 
 def schema_for(name: str) -> dict:
