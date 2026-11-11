@@ -12,8 +12,9 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-2a6f97?style=for-the-badge)](pyproject.toml)
 [![Platforms](https://img.shields.io/badge/Windows%20·%20macOS%20·%20Linux%20·%20Docker-2a6f97?style=for-the-badge)](#-quick-start)
 [![SWE-bench Verified](https://img.shields.io/badge/SWE--bench%20Verified-89.0%25-3fb950?style=for-the-badge)](#-proof-not-promises)
+[![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24145734.svg)](https://doi.org/10.5281/zenodo.24145734)
 
-[**Quick start**](#-quick-start) · [**Why Aura**](#-why-aura) · [**What it can do**](#-what-it-can-do) · [**Guide**](docs/GUIDE.md) · [**Persona**](https://github.com/kresearch-labs/Persona)
+[**Quick start**](#-quick-start) · [**Why Aura**](#-why-aura) · [**What it can do**](#-what-it-can-do) · [**Guide**](docs/GUIDE.md) · [**Persona**](https://github.com/kresearch-labs/Persona) · [**Paper**](https://doi.org/10.5281/zenodo.24145734)
 
 <br>
 
@@ -131,7 +132,7 @@ Profiles keep their own models, keys, settings and projects apart. Every chat re
 Measured on one consumer PC with a low-cost flash model (GLM-5.3 Flash), with everything released:
 
 - **SWE-bench Verified: 89.0%** (445/500) — Aura, a general-purpose agent used unchanged, with Persona inside; 88.0% without it. With Persona it finished in fewer steps with ~12% less compute.
-- **1,000 paired runs**, 24 official grade reports, every receipt and session tape: [persona-evidence](https://github.com/kresearch-labs/persona-evidence). `python recompute_swe_totals.py` reproduces the headline.
+- **1,000 paired runs**, 24 official grade reports, every receipt and session tape: [persona-evidence](https://github.com/kresearch-labs/persona-evidence). `python recompute_swe_totals.py` reproduces the headline. The paper: [https://doi.org/10.5281/zenodo.24145734](https://doi.org/10.5281/zenodo.24145734).
 
 ## ⌨️ Daily commands
 
@@ -161,6 +162,21 @@ Type `/` for the menu; TAB completes. Something failed? `aura doctor`.
 ## 🤝 Contributing
 
 Bug reports, fixes and ideas are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Found a security problem? Please report it privately: [SECURITY.md](SECURITY.md).
+
+## 📝 Cite
+
+The paper: *Persona: A Growable Personality Layer That Turns Any Agent Into a Companion That Learns You* — [https://doi.org/10.5281/zenodo.24145734](https://doi.org/10.5281/zenodo.24145734)
+
+```bibtex
+@misc{king2026persona,
+  title     = {Persona: A Growable Personality Layer That Turns Any Agent Into a Companion That Learns You},
+  author    = {King},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.24145734},
+  url       = {https://doi.org/10.5281/zenodo.24145734}
+}
+```
 
 ## 📄 License
 
