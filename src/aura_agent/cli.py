@@ -497,8 +497,8 @@ def cmd_run(args) -> int:
             phase(data.get("name", ""), data.get("detail", ""))
         elif kind == "steer":
             _ui.info(f"steer: step {data.get('step', '?')}")
-        elif kind == "notice":
-            _ui.warn(str(data.get("text", "")))
+        elif kind == "notice":            # a calm notice is information, not a warning
+            (_ui.info if data.get("calm") else _ui.warn)(str(data.get("text", "")))
         elif kind == "team":                    # Teams: the line, plain
             _ui.info("team: " + str(data.get("text", ""))
                      + "".join("\n  · " + str(x) for x in data.get("lines") or []))

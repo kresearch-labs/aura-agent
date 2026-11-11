@@ -2114,7 +2114,7 @@ class AgentLoop:
                 if _pb.available():
                     _w = _pb.welcome_once()
                     if _w:
-                        self.on_event("notice", {"text": _w})
+                        self.on_event("notice", {"text": _w, "calm": True})
                 _pg = _pb.ground(task, str(self.root),
                                  instance_id=self._pb_chat, chat=self._pb_chat)
                 if _pg:
@@ -2171,7 +2171,7 @@ class AgentLoop:
                 if _pb.available():
                     _w = _pb.welcome_once()
                     if _w:
-                        self.on_event("notice", {"text": _w})
+                        self.on_event("notice", {"text": _w, "calm": True})
                 _pg = _pb.ground(task, str(self.root),
                                  instance_id=self._pb_chat, chat=self._pb_chat)
                 if _pg:

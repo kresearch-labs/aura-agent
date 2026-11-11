@@ -715,7 +715,8 @@ class ChatApp:
                 self.say(["  " + s("faint", s.g("queue") + what) + s("dim", cut(txt, w - 46))])
         elif kind == "notice":
             self._flush_answer()
-            self.say(cells.notice_cell(str(d.get("text", "")), s, w, "warn"))
+            self.say(cells.notice_cell(str(d.get("text", "")), s, w,
+                                       "info" if d.get("calm") else "warn"))
         elif kind == "team":                   # Teams: a team card
             self._flush_answer()
             self.say(cells.team_cell(d, s, w))
