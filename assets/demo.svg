@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="470" viewBox="0 0 880 470" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15">
+  <rect x="0.5" y="0.5" width="879" height="469" rx="12" fill="#0d1117" stroke="#30363d"/>
+  <rect x="0.5" y="0.5" width="879" height="38" rx="12" fill="#161b22"/>
+  <rect x="0.5" y="26" width="879" height="12.5" fill="#161b22"/>
+  <circle cx="24" cy="19.5" r="6.5" fill="#ff5f56"/><circle cx="46" cy="19.5" r="6.5" fill="#ffbd2e"/><circle cx="68" cy="19.5" r="6.5" fill="#27c93f"/>
+  <text x="440" y="24.5" fill="#8b949e" font-size="13" text-anchor="middle">aura chat — my-project</text>
+
+  <text x="28" y="76" fill="#7ee0ff">you ›</text><text x="86" y="76" fill="#e6edf3">fix the failing date test, then push the fix</text>
+
+  <text x="28" y="112" fill="#8b949e">·</text><text x="46" y="112" fill="#c9d1d9">reading utils/dates.py</text>
+  <text x="28" y="136" fill="#8b949e">·</text><text x="46" y="136" fill="#c9d1d9">editing utils/dates.py</text><text x="262" y="136" fill="#3fb950">✓ verified on disk</text><text x="424" y="136" fill="#8b949e">· snapshot for /undo</text>
+  <text x="28" y="160" fill="#8b949e">·</text><text x="46" y="160" fill="#c9d1d9">running pytest tests/test_dates.py</text><text x="352" y="160" fill="#3fb950">✓ 14 passed</text>
+  <text x="28" y="184" fill="#8b949e">·</text><text x="46" y="184" fill="#c9d1d9">proof check: re-ran the reads the answer rests on</text><text x="496" y="184" fill="#3fb950">✓ still true</text>
+
+  <rect x="28" y="206" width="824" height="98" rx="8" fill="#1c2128" stroke="#d29922"/>
+  <text x="46" y="232" fill="#d29922">⚠ approval needed</text><text x="212" y="232" fill="#8b949e">this reaches outside your machine</text>
+  <text x="46" y="258" fill="#e6edf3">git push origin fix/date-range</text>
+  <text x="46" y="286" fill="#3fb950">[y]</text><text x="80" y="286" fill="#c9d1d9">once</text>
+  <text x="140" y="286" fill="#6fd3ff">[a]</text><text x="174" y="286" fill="#c9d1d9">always, for this exact command</text>
+  <text x="456" y="286" fill="#f85149">[n]</text><text x="490" y="286" fill="#c9d1d9">no</text>
+  <text x="560" y="286" fill="#7ee0ff">› y</text>
+
+  <text x="28" y="334" fill="#8b949e">·</text><text x="46" y="334" fill="#c9d1d9">git push origin fix/date-range</text><text x="320" y="334" fill="#3fb950">✓ ran exactly what you approved</text>
+
+  <text x="28" y="374" fill="#7ee0ff">▸ done</text><text x="96" y="374" fill="#c9d1d9">fixed the off-by-one: the range end is exclusive; 14 tests pass; pushed</text>
+  <text x="46" y="400" fill="#8b949e">claims:</text><text x="116" y="400" fill="#3fb950">3 supported</text><text x="230" y="400" fill="#8b949e">· 0 unverified · 0 contradicted</text>
+  <text x="46" y="426" fill="#8b949e">receipt:</text><text x="126" y="426" fill="#c9d1d9">run #128, hash-chained to #127</text><text x="420" y="426" fill="#3fb950">✓ chain intact</text>
+  <text x="46" y="452" fill="#8b949e">persona:</text><text x="126" y="452" fill="#6fd3ff">learned 1 confirmed lesson</text>
+</svg>
