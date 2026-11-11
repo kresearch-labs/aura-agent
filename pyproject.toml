@@ -24,6 +24,12 @@ dependencies = [
     "wcwidth>=0.2.13",
     # keys live in the OS keychain (keystore.py)
     "keyring>=25.6.0",
+    # Persona (pblocks): the frozen MiniLM eyes + the stores' math
+    "numpy>=1.26",
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    # Persona: pblock templates are YAML
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]

@@ -250,8 +250,13 @@ def build_agent(eng: Path, profile_name: str | None):
     from .tools.clarify_tool import register as register_clarify
     register_clarify(m, m._fs)
     # Aura Teams by asking: connect, the hidden token box, wire any hub
-    from .tools.team_tool import register as register_team
-    register_team(m, m._fs)
+    # Persona: plan and train pblocks with the user
+    from .tools.persona_tool import register as register_persona
+    register_persona(m, m._fs)
+    from .editions import teams_present
+    if teams_present():
+        from .tools.team_tool import register as register_team
+        register_team(m, m._fs)
     # find_way.py: `get` — find a way to what's missing (the /findaway toggle)
     from .tools.get_tool import register as register_get
     register_get(m, m._fs)
@@ -2385,6 +2390,15 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _drop_teams_parser(sub) -> None:
+    """A copy of Aura shipped without Teams has no `aura teams`."""
+    from .editions import teams_present
+    if teams_present():
+        return
+    sub._name_parser_map.pop("teams", None)
+    sub._choices_actions[:] = [a for a in sub._choices_actions if a.dest != "teams"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Every `aura …` command (also used by the chat's /team, so the chat
     runs the same commands, not copies of them)."""
@@ -2943,6 +2957,7 @@ def build_parser() -> argparse.ArgumentParser:
     vtr.add_argument("site")
     vtr.add_argument("--user")
     vt.set_defaults(fn=cmd_vault)
+    _drop_teams_parser(sub)
     return ap
 
 
@@ -2956,6 +2971,9 @@ def main(argv=None) -> None:
     if getattr(args, "profile", None) and not isinstance(args.profile, str) \
             or args.profile is None:
         pass  # Global already on args via dest sharing
+    # a TERM/HUP exits normally, so what Aura started is stopped with it
+    from .tools.process import stop_on_signals
+    stop_on_signals()
     # 1.5: no tracebacks — every dispatch goes through the guided-error guard
     from .guided_errors import run_guarded
     sys.exit(run_guarded(args.fn, args))

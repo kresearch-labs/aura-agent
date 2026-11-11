@@ -927,9 +927,14 @@ class AgentLoop:
         name, args = getattr(self, "_test_call", (None, None))
         try:
             if name == RUN_CHECKS:
-                from .validator import run_check
-                wd = Path(getattr(self, "work_dir", None) or self.root)
-                r = run_check(self.m, self.dispatch, wd, "test")
+                # The same check the agent ran — the same tests, never widened
+                # to the whole suite
+                raw = self.m.execute(RUN_CHECKS, dict(args or {}, kind="test", force=True),
+                                     self.dispatch[RUN_CHECKS])
+                try:
+                    r = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                except (TypeError, ValueError):
+                    r = {"ran": False, "why": str(raw)[:200]}
                 if not r.get("ran"):
                     return False, f"the tests could not be re-run: {r.get('why')}"
                 return bool(r.get("ok")), ("" if r.get("ok") else
@@ -1593,10 +1598,33 @@ class AgentLoop:
         if go is not None and go["context"]:
             task = task + "\n\n" + go["context"]
         messages = self._open_turn(session, task)
-        rec = self._steps(session, task, messages, kill_check, steer_queue)
+        watch = self._machine_watch()
+        try:
+            rec = self._steps(session, task, messages, kill_check, steer_queue)
+        finally:
+            if watch is not None:
+                watch.stop()
         self._skills_outcome(rec)
         self._teams_finish(rec)
         return rec
+
+    def _machine_watch(self):
+        """Machine on: watch free memory while this run works; a low-memory note
+        waits for the next step. Never for a helper's run (the parent's watch
+        covers it).
+        """
+        self.machine_notes = []
+        try:
+            from ..options import get
+            if not get("machine.watch") or getattr(self, "parent_run", ""):
+                return None
+            from ..machine import Watcher
+            w = Watcher(self.machine_notes.append)
+            w.start()
+            return w
+        except Exception as _swallowed:                     # noqa: BLE001
+            log_swallowed("loop.machine_watch", _swallowed)
+            return None
 
     def _offer_skills(self, session, messages: list) -> list:
         """skill_pick.py: when the work turns big (the task state: the goal,
@@ -1656,6 +1684,9 @@ class AgentLoop:
         self._teams = None
         if getattr(self, "parent_run", ""):
             return None          # A helper's run is part of its parent's task
+        from ..editions import teams_present
+        if not teams_present():
+            return None
         try:
             from .. import teams_run as _TR
             if not _TR.active():
@@ -1714,6 +1745,16 @@ class AgentLoop:
                     return rec
                 continue
             self._run_tools(session, res, step)
+            # pblocks: learn at every step's input->output (the tested build's
+            # design): this step's action + the world's answers = a lesson pair
+            try:
+                from .. import pblocks as _pb
+                _sp = _pb.learn_step(session, self.work_dir, step,
+                                     getattr(self, "_task_text", "") or "")
+                if _sp:
+                    self.on_event("pblock_step_learn", {"step": step, "candidates": _sp})
+            except Exception as _swallowed:      # noqa: BLE001
+                log_swallowed("loop.pblock_step_learn", _swallowed)
             if self._answered_and_ticked(res):
                 # Bug: the answer came twice — the model wrote it while ticking
                 # the plan done, then wrote it again. The answer with only
@@ -2064,6 +2105,22 @@ class AgentLoop:
             from ..taskstate import scope_message
             session.append("system", content=scope_message(
                 task, self.root, label=self._label(kind, talk)) + self._environment())
+            # pblocks: the panel's cited precedents for the FIRST task of a
+            # chat (the tested build's place; later turns get theirs below)
+            if not talk:
+                from .. import pblocks as _pb
+                self._pb_chat = str(getattr(getattr(session, "path", None), "stem", "") or "")
+                os.environ["AURA_PB_CHAT"] = self._pb_chat
+                if _pb.available():
+                    _w = _pb.welcome_once()
+                    if _w:
+                        self.on_event("notice", {"text": _w})
+                _pg = _pb.ground(task, str(self.root),
+                                 instance_id=self._pb_chat, chat=self._pb_chat)
+                if _pg:
+                    session.append("system", content=_pg)
+                    self.on_event("pblock_ground", {"lines": len(_pg.splitlines()),
+                                                    "seats": _pb.ground_seats(_pg)})
             # Scope-classified planning posture. Multi -> no extra block
             # (static TODO_INSTRUCTION already mandates a plan); single -> one
             # short suppression line.
@@ -2104,6 +2161,23 @@ class AgentLoop:
             if resolution:
                 msg += "\n\n" + resolution
             session.append("system", content=msg + self._environment())
+            # Pblocks: the panel's cited precedents for this task, as one
+            # system message — never a prompt change; "" when off, not
+            # installed, or no seat stores
+            if not talk:
+                from .. import pblocks as _pb
+                self._pb_chat = str(getattr(getattr(session, "path", None), "stem", "") or "")
+                os.environ["AURA_PB_CHAT"] = self._pb_chat
+                if _pb.available():
+                    _w = _pb.welcome_once()
+                    if _w:
+                        self.on_event("notice", {"text": _w})
+                _pg = _pb.ground(task, str(self.root),
+                                 instance_id=self._pb_chat, chat=self._pb_chat)
+                if _pg:
+                    session.append("system", content=_pg)
+                    self.on_event("pblock_ground", {"lines": len(_pg.splitlines()),
+                                                    "seats": _pb.ground_seats(_pg)})
             messages = list(session.messages)
         if kind in ("question", "chat") and not self._reply and not talk:
             # answered, nothing changed for it (the user can say "do it")
@@ -2252,6 +2326,15 @@ class AgentLoop:
                 session.append("user", content=f"{label} {msg}", step=step, by="user")
                 messages = messages + [{"role": "user", "content": f"{label} {msg}"}]
             self.on_event("steer", {"step": step, "items": items})
+
+        # /machine on: memory got low while the last step ran — the model is
+        # told once, as Aura's note (never as the user's words)
+        _mn = getattr(self, "machine_notes", None)
+        while _mn:
+            _note = _mn.pop(0)
+            self.on_event("notice", {"text": _note.replace("[MACHINE] ", "")})
+            session.note(_note, step=step)
+            messages = messages + [{"role": "user", "content": aura_note(_note)}]
 
         # 2.5: lint the files the last step changed; problems in them go
         # back to the model before its next move
@@ -2575,7 +2658,7 @@ class AgentLoop:
             new = [d for d in drift if d not in seen]
             self._drift_seen = seen | set(new)
             if new:
-                # Re-read what the user asked; if it still doesn't fit, ask the
+                # re-read what the user asked; if it still doesn't fit, ask the
                 # user.
                 messages = messages + [{
                     "role": "system",
@@ -3370,6 +3453,25 @@ class AgentLoop:
         every finalize ALSO carries the diff guarantee — receipt checks name
         whether a diff exists and where it came from.
         """
+        # pblocks: every exit is a lesson (clean, max steps, stopped, failed);
+        # lessons land as candidates that need corroboration — the model's
+        # own word never counts as a confirmed outcome
+        try:
+            from .. import pblocks as _pb
+            _n = _pb.learn(getattr(self, "_session_ref", None), self.work_dir,
+                           rec, getattr(self, "_task_text", "") or "")
+            if _n:
+                self.on_event("pblock_learn", {"candidates": _n})
+            # run-end closure (the tested build): output audit + verdict
+            # linking, on a run that ended with an answer
+            if model_claim:
+                _pb.close_run(model_claim, getattr(self, "_task_text", "") or "",
+                              rec.error is None,
+                              # the same id the ground's diary stamp used, so
+                              # the join finds this run's compile
+                              str(getattr(self, "_pb_chat", "") or ""), self.on_event)
+        except Exception as _swallowed:          # noqa: BLE001
+            log_swallowed("loop.pblock_learn", _swallowed)
         # First so the receipt check reflects it
         try:
             self._engine_diff_guarantee(rec)

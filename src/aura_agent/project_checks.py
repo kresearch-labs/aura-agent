@@ -57,6 +57,78 @@ class Check:
             return subprocess.list2cmdline(self.cmd)
         return shlex.join(self.cmd)
 
+    def only(self, tests: list[str]) -> "Check | None":
+        """The same check limited to these test files / test ids; None when
+        this tool can't be told which tests to run (a Makefile target, the
+        operator's own command)."""
+        tests = [t for t in tests if isinstance(t, str) and t.strip()][:MAX_TARGETS]
+        if not tests or self.kind != "test" or self.source == "operator":
+            return None
+        c = self.cmd
+        if "pytest" in c:
+            cmd = c + tests
+        elif c[:2] == ["npm", "test"]:
+            cmd = c + ["--"] + tests
+        elif c[:2] == ["cargo", "test"]:
+            cmd = c + [tests[0]]                 # Cargo takes one name filter
+        elif c[:2] == ["go", "test"]:
+            cmd = c[:2] + tests                  # Packages, e.g../auth
+        else:
+            return None
+        return Check(self.kind, cmd, self.why, self.source, self.needs)
+
+
+MAX_TARGETS = 40
+_TEST_NAME = re.compile(r"(^test_.+\.py$|_test\.py$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.go$)")
+
+
+def is_test_file(path: str) -> bool:
+    return bool(_TEST_NAME.search(Path(path).name))
+
+
+def related_tests(root: Path, changed: list[str], limit: int = 4000) -> list[str]:
+    """The test files that belong to the changed files: changed test files
+    themselves; tests named after a changed module (test_auth.py,
+    auth_test.py, auth.test.ts, auth.spec.js, auth_test.go); Python tests
+    that import it. Paths are relative to root. Go gets package folders."""
+    root = Path(root)
+    stems = {Path(p).stem for p in changed if not is_test_file(p)}
+    out: list[str] = [Path(p).as_posix() for p in changed if is_test_file(p)]
+    names = "|".join(map(re.escape, stems))
+    # `import auth`, `import pkg.auth`, `from pkg.auth import x`, `from pkg import auth`
+    imports = re.compile(rf"^\s*(import\s+[\w., ]*\b({names})\b|from\s+[\w.]*\b({names})\b"
+                         rf"|from\s+[\w.]+\s+import\s+[^\n]*\b({names})\b)", re.M) if stems else None
+    import os
+    seen = 0
+    files = []
+    for dirpath, dirnames, names in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]   # Never walked into
+        for n in names:
+            seen += 1
+            if is_test_file(n):
+                files.append(Path(dirpath) / n)
+        if seen > limit:
+            break
+    for p in files:
+        if len(out) >= MAX_TARGETS:
+            break
+        name = p.name
+        rel = p.relative_to(root).as_posix()
+        if rel in out:
+            continue
+        base = re.sub(r"^test_|(_test)?\.py$|\.(test|spec)\.[cm]?[jt]sx?$|_test\.go$", "", name)
+        hit = base in stems
+        if not hit and imports is not None and name.endswith(".py"):
+            hit = bool(imports.search(_read(p)))
+        if hit:
+            out.append(rel)
+    go = [p for p in out if p.endswith("_test.go")]
+    if go:
+        out = [p for p in out if not p.endswith("_test.go")] + sorted(
+            {"./" + (Path(p).parent.as_posix() if Path(p).parent.as_posix() != "." else "")
+             for p in go})
+    return out[:MAX_TARGETS]
+
 
 def _installed(name: str) -> bool:
     if name.startswith("py:"):                       # A Python module

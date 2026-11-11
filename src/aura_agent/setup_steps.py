@@ -1801,6 +1801,9 @@ STEPS: list[Step] = [
     Step("team", 9, "Team work", True, "aura setup team  ·  aura teams",
          asks=_team_asks, save=_team_save, check=_team_check),
 ]
+from .editions import teams_present as _teams_present  # noqa: E402
+if not _teams_present():                    # Shipped without Aura Teams
+    STEPS = [s for s in STEPS if s.id != "team"]
 BY_ID = {s.id: s for s in STEPS}
 # the old step names still open the step they were folded into
 ALIASES = {"code": "tools", "look": "you"}
@@ -1899,6 +1902,11 @@ def run(mode: str = "full", only: list | None = None, answers: dict | None = Non
         interactive: bool = True, dry_run: bool = False, inp=input, say=print) -> int:
     """Returns an exit code."""
     ctx = context()
+    try:                                     # The machine, read once
+        from .machine import profile
+        profile(refresh=True)
+    except Exception:                        # noqa: BLE001
+        pass
     answers = dict(answers or {})
     steps = [s for s in STEPS if (only and s.id in only)
              or (not only and (mode == "full" or s.quick))]

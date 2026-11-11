@@ -5,11 +5,18 @@ Each line: {seq, ts, role, content?, tool_calls?, tool_call_id?, name?, meta?}
 plus records: {"record": "compact", ...} and {"record": "settings",
 "settings": {...}} — everything this session runs with (model, budget,
 features, mode, ...); the last one wins, so /resume brings it back.
-Resume = read all lines → rebuild message list → continue. Crash-safe:
-every line is self-contained, partial trailing line is ignored on load.
+Resume = rebuild the message list → continue. Crash-safe: every line is
+self-contained, partial trailing line is ignored on load.
+
+The whole chat stays in the jsonl. Opening a chat reads only the recent
+part: each compaction also writes <name>.view.json — the message list right
+after it, and where in the jsonl that point is — so a chat of weeks opens
+from its last compaction instead of from its first line. A view that does
+not match the jsonl is ignored and the chat is read from the start.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -18,6 +25,16 @@ import time
 from pathlib import Path
 
 _IS_WIN = os.name == "nt"
+
+VIEW_VERSION = 1
+VIEW_TAIL = 4096               # Bytes before the view's offset that must still match
+VIEW_FROM_BYTES = 256 * 1024   # A chat read in full this big gets a view for next time
+
+
+def _compact_brief(rec: dict) -> dict:
+    """What is kept in memory about one compaction (the summary itself is
+    in the message list and in the jsonl)."""
+    return {k: rec.get(k) for k in ("seq", "ts", "kept", "dropped")}
 
 
 def locked_append(path: Path, line: str, wait: float = 2.0) -> int:
@@ -130,48 +147,121 @@ class Session:
 
     # ------------------------------------------------------------------ load
     def _load(self) -> None:
-        """Tail-replay: rebuild message list from jsonl; tolerate partial tail.
-        `compact` records rewrite the message list in place (: compaction
-        persists across resume — no resurrection of compacted turns).
+        """Rebuild the message list; tolerate a partial tail. `compact` records
+        rewrite the message list in place (: compaction persists across resume
+        — no resurrection of compacted turns). Starts from the view of the last
+        compaction when it matches the file; else from the first line.
         """
         if not self.path.exists():
             return
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # Partial write from a crash — skip
-            self.seq = max(self.seq, rec.get("seq", 0))
-            if rec.get("record") == "compact":
-                self.compacts.append(rec)
-                self._apply_compact_record(rec)
-                continue
-            if rec.get("record") == "settings":
-                if isinstance(rec.get("settings"), dict):
-                    self.settings = rec["settings"]
-                continue
-            if rec.get("record") == "title":
-                self.title = str(rec.get("title") or "")
-                continue
-            if rec.get("record") == "meta":
-                if not self.meta:              # The first one is the chat's
-                    self.meta = {k: rec.get(k) for k in ("id", "created", "parent", "forked_at")}
-                continue
-            if rec.get("record") == "flags":
-                self.flags.update({k: bool(v) for k, v in (rec.get("flags") or {}).items()})
-                continue
-            msg = {k: v for k, v in rec.items()
-                   if k in _MSG_KEYS and v is not None}
-            if rec.get("ts") and msg.get("role") == "user":
-                from .notes import is_users_words
-                if is_users_words(rec):
-                    msg["ts"] = rec["ts"]
-            if msg.get("role"):
-                self.messages.append(msg)
+        start = self._open_view()
+        with self.path.open("rb") as f:
+            f.seek(start)
+            for raw in f:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # Partial write from a crash — skip
+                self._take(rec)
+        if not start and self.compacts and self.path.stat().st_size > VIEW_FROM_BYTES:
+            self._save_view()               # The next open starts from here
+
+    def _take(self, rec: dict) -> None:
+        """One jsonl record into the in-memory state."""
+        self.seq = max(self.seq, rec.get("seq", 0))
+        if rec.get("record") == "compact":
+            self.compacts.append(_compact_brief(rec))
+            self._apply_compact_record(rec)
+            return
+        if rec.get("record") == "settings":
+            if isinstance(rec.get("settings"), dict):
+                self.settings = rec["settings"]
+            return
+        if rec.get("record") == "title":
+            self.title = str(rec.get("title") or "")
+            return
+        if rec.get("record") == "meta":
+            if not self.meta:              # The first one is the chat's
+                self.meta = {k: rec.get(k) for k in ("id", "created", "parent", "forked_at")}
+            return
+        if rec.get("record") == "flags":
+            self.flags.update({k: bool(v) for k, v in (rec.get("flags") or {}).items()})
+            return
+        msg = {k: v for k, v in rec.items()
+               if k in _MSG_KEYS and v is not None}
+        if rec.get("ts") and msg.get("role") == "user":
+            from .notes import is_users_words
+            if is_users_words(rec):
+                msg["ts"] = rec["ts"]
+        if msg.get("role"):
+            self.messages.append(msg)
+
+    # ------------------------------------------------------------- the view
+    @property
+    def view_path(self) -> Path:
+        return self.path.with_name(self.path.stem + ".view.json")
+
+    def _tail_hash(self, offset: int) -> str:
+        """A fingerprint of the bytes just before `offset` (proves the jsonl
+        is still the file the view was made from)."""
+        n = min(VIEW_TAIL, offset)
+        with self.path.open("rb") as f:
+            f.seek(offset - n)
+            return hashlib.sha256(f.read(n)).hexdigest()
+
+    def _open_view(self) -> int:
+        """Take the state from the view; the byte offset to read on from
+        (0 = no usable view: read the whole file)."""
+        try:
+            v = json.loads(self.view_path.read_text(encoding="utf-8"))
+            off = int(v["offset"])
+            if (v.get("v") != VIEW_VERSION or off <= 0
+                    or off > self.path.stat().st_size or v.get("tail") != self._tail_hash(off)):
+                return 0
+            self.seq = int(v["seq"])
+            self.messages = list(v["messages"])
+            self.compacts = list(v.get("compacts") or [])
+            self.settings = dict(v.get("settings") or {})
+            self.title = str(v.get("title") or "")
+            self.meta = dict(v.get("meta") or {})
+            self.flags = dict(v.get("flags") or {})
+            return off
+        except (OSError, ValueError, KeyError, TypeError):
+            self.seq, self.messages, self.compacts = 0, [], []
+            self.settings, self.title, self.meta, self.flags = {}, "", {}, {}
+            return 0
+
+    def _save_view(self) -> None:
+        """Write the view: the state as a full read would rebuild it now,
+        and the jsonl's size at this moment."""
+        try:
+            off = self.path.stat().st_size
+            v = {"v": VIEW_VERSION, "offset": off, "tail": self._tail_hash(off),
+                 "seq": self.seq, "messages": self.messages, "compacts": self.compacts,
+                 "settings": self.settings, "title": self.title, "meta": self.meta,
+                 "flags": self.flags}
+            tmp = self.view_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(v, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.view_path)
+        except (OSError, TypeError, ValueError):
+            pass                            # The view is only a shortcut
+
+    def drop_view(self) -> None:
+        try:
+            self.view_path.unlink()
+        except OSError:
+            pass
+
+    def in_view(self) -> dict:
+        """How much of this chat the model has in front of it now: the
+        messages since the last compaction, from when, and how many earlier
+        parts were summarized (the whole chat stays on disk)."""
+        first = next((m.get("ts") for m in self.messages if m.get("ts")), None)
+        return {"messages": sum(1 for m in self.messages if m.get("role") != "system"),
+                "since": first, "summarized": len(self.compacts)}
 
     def _apply_compact_record(self, rec: dict) -> None:
         """Replay a persisted compaction: [summary] + kept non-system tail
@@ -195,6 +285,14 @@ class Session:
                "record": "compact", "summary": summary_content,
                "kept": kept, "dropped": dropped}
         self._write(json.dumps(rec, ensure_ascii=False) + "\n")
+        if self._held is None:
+            # the view holds what a full read would rebuild right here (the
+            # caller then sets its own live list; replay must not depend on it)
+            live = self.messages
+            self.messages = self._replay_compact(list(live), rec)
+            self.compacts.append(_compact_brief(rec))
+            self._save_view()
+            self.messages = live
         return rec
 
     def record_title(self, title: str, by: str = "") -> None:
@@ -353,9 +451,13 @@ class Session:
                 compacts.append(rec)
                 messages = self._replay_compact(messages, rec)
                 continue
-            msg = {k: rec[k] for k in ("role", "content", "tool_calls",
-                                       "tool_call_id", "name")
-                   if rec.get(k) is not None}
+            # the same keys a normal load keeps — `by` too, so after a rewind
+            # Aura's notes are still told apart from the user's words
+            msg = {k: v for k, v in rec.items() if k in _MSG_KEYS and v is not None}
+            if rec.get("ts") and msg.get("role") == "user":
+                from .notes import is_users_words
+                if is_users_words(rec):
+                    msg["ts"] = rec["ts"]
             if msg.get("role"):
                 messages.append(msg)
         return {"messages": messages, "seq": max_seq, "compacts": compacts,
@@ -385,6 +487,7 @@ class Session:
         if self.path.exists():
             shutil.copy2(self.path, snap)
         state = self.state_at_seq(seq)
+        self.drop_view()                    # The file is rewritten.
         with self.path.open("w", encoding="utf-8") as f:
             for rec in records:
                 if rec.get("seq", 0) > seq:

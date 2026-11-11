@@ -97,7 +97,9 @@ def register(mediator, dispatch: dict, eng: Path) -> list[dict]:
     """Start configured servers, register their tools, return their schemas.
     A server that fails to start or list contributes nothing."""
     from .mcp_client import expand_tools_for_mediator, load_servers_from_config
-    servers = load_servers_from_config(load_config(eng))
+    # The same server (same name, command, address and settings) is started
+    # once per Aura and shared by every chat, job and helper that loads it.
+    servers = [_LIVE.setdefault(_key(s), s) for s in load_servers_from_config(load_config(eng))]
     if not servers:
         return []
     overrides = getattr(mediator, "grade_overrides", None)
@@ -128,6 +130,15 @@ def register(mediator, dispatch: dict, eng: Path) -> list[dict]:
         if s not in _started:
             _started.append(s)
     return schemas
+
+
+_LIVE: dict[str, object] = {}
+
+
+def _key(server) -> str:
+    """What makes two configured servers the same server."""
+    keep = ("name", "command", "args", "env", "url", "token", "oauth", "allow", "timeout")
+    return json.dumps({k: getattr(server, k, None) for k in keep}, sort_keys=True, default=str)
 
 
 @atexit.register

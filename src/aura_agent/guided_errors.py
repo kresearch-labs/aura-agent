@@ -118,10 +118,12 @@ def _plain_what(exc: BaseException) -> str:
 
 
 # What pyproject.toml lists (import name → package): required vs optional
-_REQUIRED = {"nacl": "pynacl", "wcwidth": "wcwidth", "keyring": "keyring"}
+_REQUIRED = {"nacl": "pynacl", "wcwidth": "wcwidth", "keyring": "keyring",
+             "numpy": "numpy", "onnxruntime": "onnxruntime", "tokenizers": "tokenizers"}
 _OPTIONAL = {"playwright": "'aura-agent[web]'", "pypdf": "'aura-agent[pdf]'",
              "cryptography": "'aura-agent[vault]'", "pytest": "'aura-agent[test]'",
-             "hypothesis": "'aura-agent[test]'"}
+             "hypothesis": "'aura-agent[test]'",
+}
 
 
 def dep_kind(mod: str) -> tuple[str, str]:

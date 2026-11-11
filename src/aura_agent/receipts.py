@@ -1,12 +1,8 @@
 """receipts.py — per-run receipt (the run's completion record).
 
-  run-receipt spec: "Silence is not an operating state." Five-status
         vocabulary completed/no_work/blocked/failed/uncertain; sources and
         outputs hashed; secrets recorded as NAMES not values.
-  DCS R+2: hash-chained receipts (prev_receipt hash), chain-break
-  LEDGERMIND: the model's claim of completion is never the record;
         status comes from receipt CHECKS (anti fail-plausible).
-  token spend attributed by surface (main loop vs delegate), cache
         split kept separate; JSONL-flat substrate, not OTel (still
         "Development" stability).
 

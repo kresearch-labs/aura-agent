@@ -70,6 +70,9 @@ TOOLSETS: tuple[Toolset, ...] = (
             ("team", "teams", "teammate", "teammates", "hub", "the board", "our board",
              "vikunja", "jira", "linear", "github issues", "gitlab", "trello", "asana",
              "connect to", "connect me", "my team", "our team", "team chat", "chat with")),
+    Toolset("persona", "Persona: plan and train new pblocks with you (you approve each)",
+            ("pblock_propose", "pblock_train"),
+            ("pblock", "pblocks", "persona", "train new pblocks", "train a pblock")),
     Toolset("update", "Aura's own updates: check, update, go back (you confirm)",
             ("aura_update",),
             ("update aura", "update yourself", "update you", "new version", "newer version",
@@ -137,6 +140,11 @@ TOOLSETS: tuple[Toolset, ...] = (
             ("skill", "skills", "procedure", "playbook", "recipe",
              "save this as")),
 )
+
+# a copy of Aura shipped without Aura Teams has no "team" toolset
+from .editions import teams_present as _teams_present  # noqa: E402
+if not _teams_present():
+    TOOLSETS = tuple(s for s in TOOLSETS if s.name != "team")
 
 BY_NAME = {t.name: t for t in TOOLSETS}
 LARGE_CONTEXT = 64_000       # Tokens; at or above this the big_model sets come along

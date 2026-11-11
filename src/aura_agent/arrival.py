@@ -1,4 +1,4 @@
-"""arrival.py — the arrival router (detection + one-question flows).
+"""arrival.py —: the arrival router (detection + one-question flows).
 
 Pure functions; the endpoint probe is injectable (`_probe`) so tests never
 touch the network.

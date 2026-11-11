@@ -215,13 +215,16 @@ class Mediator:
         spec = self.tools.get(name)
         if spec is None:
             raise Violation(f"unknown tool '{name}' — not registered, refused")
-        if self.mode == "plan" and name not in self.plan_safe:
+        # Changing one of Aura's own settings always asks the user with a card,
+        # so it stays possible in plan and discuss mode
+        _own_setting = name == "settings_set"
+        if self.mode == "plan" and name not in self.plan_safe and not _own_setting:
             self._audit(name, args, "REFUSED_MODE", None)
             raise Violation(f"mode: tool '{name}' not allowed in plan mode")
         # Discuss: the user wants to talk, not to have the work done — reading
         # and searching to understand are fine, nothing that changes anything
         # (files, commands, plans) runs
-        if self.mode == "discuss" and spec.blast_radius != BlastRadius.READ:
+        if self.mode == "discuss" and spec.blast_radius != BlastRadius.READ and not _own_setting:
             self._audit(name, args, "REFUSED_MODE", None)
             raise Violation(f"discuss mode: '{name}' would change something — the user only "
                             "wants to talk. Answer in words; if they want it done, say "
@@ -374,6 +377,13 @@ class Mediator:
             # anything that could change files (a write, a command): the
             # counter run_checks compares to skip an identical re-run
             self._changes = getattr(self, "_changes", 0) + 1
+            if name in ("write_file", "edit_file", "multi_edit", "apply_patch") \
+                    and isinstance(args.get("path"), str):
+                # the files this run changed: run_checks picks their tests
+                if not hasattr(self, "_changed_paths"):
+                    self._changed_paths = []
+                if args["path"] not in self._changed_paths:
+                    self._changed_paths.append(args["path"])
         timeout = min(spec.default_timeout, self.budgets.per_call_timeout)
         t0 = time.monotonic()
         try:
@@ -470,6 +480,9 @@ class Mediator:
             # A command names paths too; the user's own!cmd is theirs. A
             # key/credential place is refused outright.
             from .outside import folder_of, inside, never_reason, paths_in_command
+            low = str(args.get("cmd") or "").lower()
+            if any(t.lower() in low for t in getattr(self, "banned_tokens", ())):
+                return None              # The tool refuses it as banned, with that reason
             work = Path(getattr(self, "work_dir", None) or self.root).resolve()
             for p in paths_in_command(str(args.get("cmd") or ""), work):
                 why = never_reason(p)
@@ -543,16 +556,21 @@ class Mediator:
         def _keep() -> str:
             save(self.root, folder)
             return f"{folder} saved for this project (/add-dir to see or remove)"
+        command = name in ("run_command", "process_start")
         ok, note = ask_operator(
             self.root, self.approver, name, args, "G2", str(folder),
-            (f"{path} is outside this project — yes allows this one file for this chat "
+            (f"{path} is outside this project — yes allows this one call only "
+             "(a whole drive or home folder is never allowed)" if wide and command else
+             f"{path} is outside this project — yes allows this one file for this chat "
              "(a whole drive or home folder is never allowed)" if wide else
              f"{path} is outside this project — yes allows the folder {folder} "
              "for this chat, always saves it for this project"),
             allow_always=not wide, heading="outside the project", on_always=_keep)
         if ok:
-            if wide:
-                self.outside_exact.add(Path(path).resolve())
+            if wide and not command:
+                self.outside_exact.add(Path(path).resolve())   # This file, for the chat
+            elif wide:
+                pass                       # A command over a whole drive: this call only
             else:
                 self.outside_ok.add(folder)
             self._audit(name, args, f"OK_OUTSIDE:{note[:80]}", None)

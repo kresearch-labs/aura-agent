@@ -207,20 +207,106 @@ def _close_job(job) -> None:
 def run_in_job(cmd: str, timeout: float, cwd: str | None, env: dict):
     """Windows: the command and everything it starts live in one job; when
     the command ends or times out, nothing it started keeps running."""
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                         text=True, cwd=cwd, env=env, encoding="utf-8", errors="replace")
-    job = _job_for(p.pid)
+    return run_tree(cmd, shell=True, timeout=timeout, cwd=cwd, env=env)
+
+
+# ------------------------------------------- every command, every engine --
+KEEP_BYTES = 5_000_000      # Per stream: the start and the end held in memory
+
+
+def _read_kept(f, keep: int) -> tuple[str, int]:
+    """The start and the end of an output file (its middle stays on disk
+    only for as long as the command runs); and its full size."""
+    f.flush()
+    size = f.seek(0, os.SEEK_END)
+    f.seek(0)
+    if size <= keep:
+        data = f.read()
+    else:
+        half = keep // 2
+        head = f.read(half)
+        f.seek(size - half)
+        data = (head + f"\n[… {size - 2 * half:,} bytes of output not kept …]\n".encode()
+                + f.read())
+    return data.decode("utf-8", errors="replace"), size
+
+
+def _stop_group(p) -> None:
+    """The command and everything it started: its process group (it was
+    started as the leader of a new session), TERM first, then KILL."""
+    import signal
+    import time
     try:
-        out, err = p.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _close_job(job)
-        job = None
-        p.kill()
-        p.communicate()
-        raise
-    finally:
-        _close_job(job)
-    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+        os.killpg(p.pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(30):                          # Up to 3 s to finish cleanly
+        if p.returncode is None:
+            try:
+                p.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            os.killpg(p.pid, 0)                  # Anyone left in the group?
+        except OSError:
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def run_tree(cmd, *, shell: bool, timeout: float, cwd: str | None, env: dict,
+             preexec_fn=None, on_timeout=None, keep: int = KEEP_BYTES):
+    """Run one command the way every engine does: its output goes to files
+    as it comes (Aura's memory stays the same however much it prints); it
+    runs in its own process group (POSIX) or job (Windows); when it ends, is
+    stopped or times out, nothing it started keeps running. on_timeout runs
+    after the stop (an engine's own cleanup, e.g. a container). Returns a
+    CompletedProcess whose .out_bytes is the real size of the output."""
+    import tempfile
+    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+        kw = dict(stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, cwd=cwd, env=env, shell=shell)
+        if os.name == "nt":
+            p = subprocess.Popen(cmd, **kw)
+            job = _job_for(p.pid)
+        else:
+            p = subprocess.Popen(cmd, start_new_session=True, preexec_fn=preexec_fn, **kw)
+            job = None
+        try:
+            p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                _close_job(job)
+                job = None
+                p.kill()
+            else:
+                _stop_group(p)
+            p.wait()
+            if on_timeout is not None:
+                try:
+                    on_timeout()
+                except Exception:                    # noqa: BLE001
+                    pass
+            raise
+        finally:
+            if job is not None:
+                _close_job(job)                      # What it left running ends with it
+        left = False
+        if os.name != "nt":
+            try:                                     # Anything it started still there?
+                os.killpg(p.pid, 0)
+                left = True
+                _stop_group(p)
+            except OSError:
+                pass
+        out, n_out = _read_kept(fo, keep)
+        err, n_err = _read_kept(fe, keep)
+    done = subprocess.CompletedProcess(cmd, p.returncode, out, err)
+    done.out_bytes = n_out + n_err
+    done.left_running = left
+    return done
 
 
 # ---------------------------------------------------------------- shared --

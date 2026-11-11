@@ -56,6 +56,7 @@ def _site_ok_for(mediator: Mediator):
 def register(mediator: Mediator, dispatch: dict,
              banned: tuple[str, ...] = (), allow_unbanned: bool = False) -> None:
     banned_tokens = () if allow_unbanned else tuple(banned or DEFAULT_BANNED)
+    mediator.banned_tokens = banned_tokens     # The outside-folder check leaves these to this refusal
 
     def run_command(args) -> str:
         cmd = (args.get("cmd") or "").strip()
@@ -120,6 +121,13 @@ def register(mediator: Mediator, dispatch: dict,
             so, se = proc.stdout or "", proc.stderr or ""
             payload = {"cmd": cmd, "exit_code": proc.returncode,
                        "stdout": so, "stderr": se, "sandbox": sandbox_note}
+            if getattr(proc, "left_running", False):
+                # the command ended but programs it started were still running:
+                # they were stopped with it (nothing Aura runs outlives its call)
+                payload["left_running"] = (
+                    "programs this command started in the background were still running "
+                    "when it ended and were stopped — start a program that must keep "
+                    "running with process_start")
             # Say plainly that the sandbox has no network, once per call
             if _refused:
                 _ok = [h for h in _refused[:3] if mediator._ask_scope("run_command", args, h)]
@@ -168,11 +176,13 @@ def register(mediator: Mediator, dispatch: dict,
             return json.dumps({"ok": proc.returncode == 0,
                                "exit_code": proc.returncode, "result": data,
                                "truncated": ref is not None,
-                               "total_bytes": len(so) + len(se),
+                               "total_bytes": getattr(proc, "out_bytes", len(so) + len(se)),
                                "artifact_ref": ref, "duration_ms": 0},
                               ensure_ascii=False)
         except subprocess.TimeoutExpired:
-            raise Violation(f"run_command: timeout after {timeout:.0f}s")
+            raise Violation(f"run_command: timeout after {timeout:.0f}s — the command and "
+                            "everything it started were stopped; run a smaller part "
+                            "(for tests: only the ones related to the change)")
 
     mediator.register(ToolSpec(
         RUN_COMMAND, BlastRadius.EXECUTE,

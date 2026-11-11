@@ -362,6 +362,14 @@ def _options() -> list[Option]:
                       "itself can't do) are always said plainly — /findaway switches it",
                       "bool", False, getter=g, setter=s,
                       words=("find a way", "can't", "missing", "install", "sandbox", "workaround")))
+    g, s = _plain("pblocks.on")
+    out.append(Option("pblocks.on", "Assist", "Persona: learns how you work",
+                      "on = the pblocks in this chat's panel (your personal one and any you chose "
+                      "in /persona) judge each task and learn from it, on this computer only; "
+                      "off = plain Aura, nothing used or learned. AURA_PBLOCKS=0 also turns it off",
+                      "bool", True, env="AURA_PBLOCKS", getter=g, setter=s,
+                      needs=lambda: __import__("aura_agent.pblocks", fromlist=["x"]).needs_line(),
+                      words=("pblocks", "persona", "panel", "memory", "learn", "lessons")))
     g, s = _plain("updates.check")
     out.append(Option("updates.check", "Updates", "check for a new Aura once a day",
                       "on = once a day, when a chat opens, Aura asks GitHub whether a newer "
@@ -370,6 +378,14 @@ def _options() -> list[Option]:
                       "that one request",
                       "bool", False, getter=g, setter=s,
                       words=("update", "updates", "new version", "check for updates", "daily check")))
+    g, s = _plain("machine.watch")
+    out.append(Option("machine.watch", "Machine", "watch memory while Aura works",
+                      "on = while a task runs Aura checks free memory every second (no model "
+                      "call); when it gets low, the model is told once what Aura's own programs "
+                      "hold, to go lighter. Off = only the check after each task. /machine "
+                      "switches it",
+                      "bool", False, getter=g, setter=s,
+                      words=("memory", "ram", "machine", "out of memory", "oom", "watch")))
     g, s = _plain("chats.trash_days")
     out.append(Option("chats.trash_days", "Chats", "days a deleted chat is kept",
                       "/resume delete puts a chat in the trash; /resume restore brings it "

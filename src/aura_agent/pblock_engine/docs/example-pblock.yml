@@ -1,0 +1,24 @@
+# toy-pblock: example template for the smoke test (support tickets).
+# Copy this file, change the territory + labels + corpus path, run:
+#   python train_pblock.py --template examples/toy/toy-pblock.yml
+name: toy_support
+territory: customer support ticket resolution
+
+corpus:
+  path: corpus.jsonl          # relative to this template file
+  format: jsonl               # records: {situation: str, outcome: 0.0|1.0}
+
+labels:                        # declarative judgment heads (keyword rules)
+  component_named:
+    any_of: [component named, names the failing component, failing component]
+  verified_fix:
+    any_of: [verified by a check, fix is verified, verification]
+  version_consistent:
+    any_of: [version where it landed, matches the fix version, versions]
+
+structural:
+  counts: true                 # n_chars/100, n_words/20
+  keywords: [ticket, component, verified, version, triage, resolution]
+
+gates:
+  min_cases: 50

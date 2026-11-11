@@ -31,6 +31,16 @@ def register(mediator: Mediator, dispatch: dict, root: Path) -> None:
             return f"error: kind is one of {', '.join(KINDS)}"
         # the project being worked on (loop.work_dir), else the workspace
         where = Path(getattr(mediator, "work_dir", None) or root)
+        # which tests: the ones asked for; else, for tests, the ones that
+        # belong to the files this run changed; the whole suite only when
+        # asked (all: true) or when no related test is found
+        tests = [str(t) for t in (args.get("tests") or []) if str(t).strip()]
+        if kind == "test" and not tests and not args.get("all"):
+            from ..project_checks import related_tests
+            changed = list(getattr(mediator, "_changed_paths", None) or [])
+            tests = related_tests(where, changed) if changed else []
+            if tests:
+                args = dict(args, tests=tests)       # The proof re-run repeats exactly this
         # Way 2: the same checks run again with nothing changed since they
         # PASSED gives the same answer — said, not re-run (testx's: only after
         # a pass — a failing run runs again, tests can be flaky; force: true
@@ -38,15 +48,19 @@ def register(mediator: Mediator, dispatch: dict, root: Path) -> None:
         cache = getattr(mediator, "_checks_cache", None)
         if cache is None:
             cache = mediator._checks_cache = {}
-        prev = cache.get((kind, str(where)))
+        key = (kind, str(where), tuple(tests))
+        prev = cache.get(key)
         if (prev and not args.get("force") and prev[0] == getattr(mediator, "_changes", 0)
                 and prev[1].get("ok")):
             return json.dumps(dict(prev[1], unchanged=(
                 "nothing was written or run since these checks passed — the same result, not "
                 "run again (force: true runs them anyway)")), ensure_ascii=False)
-        res = run_check(mediator, dispatch, where, kind, tail_chars=4000)
+        res = run_check(mediator, dispatch, where, kind, tail_chars=4000, tests=tests or None)
         if res.get("ran"):
-            cache[(kind, str(where))] = (getattr(mediator, "_changes", 0), res)
+            cache[key] = (getattr(mediator, "_changes", 0), res)
+            if res.get("scope", "all") != "all":
+                res["whole_suite"] = ("only the tests related to the change ran — "
+                                      "run_checks with all: true runs the whole suite")
         if not res.get("ran"):
             found = [k for k in KINDS if check_for(where, k)]
             res["available"] = found or "none — the operator can set them " \

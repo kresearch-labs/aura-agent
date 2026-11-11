@@ -263,8 +263,14 @@ def run_job(eng: Path, job_id: str, profile_name: str | None = None,
     m.approver = waiting_approver(eng)
     session = new_session(eng / "sessions", f"cron-{job_id}")
     state: dict = {}
-    rec = loop.run(session, job["task"],
-                   kill_check=lambda: state.get("killed", False))
+    try:
+        rec = loop.run(session, job["task"],
+                       kill_check=lambda: state.get("killed", False))
+    finally:
+        # the runner lives for days: what this job started ends with the job
+        reg = getattr(m, "_procs", None)
+        if reg is not None:
+            reg.close()
     # A run that ended cleanly but without the files its task names is not "ok"
     missing = list(getattr(rec, "gate_missing", None) or [])
     ok = rec.error is None and not missing

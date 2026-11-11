@@ -1,0 +1,20 @@
+# blank-pblock: fresh-install seed (the engine ships with ONE blank
+# self-training pblock; domain-agnostic — any field of work is a territory
+# it can grow into)
+#
+# A pblock = one slice of territory + judgment labels + gates.
+# Every slot below is domain-neutral: fill them for ANY field
+# (clinician, forecaster, teacher, engineer...) or leave blank and let
+# lived experience define them. No pre-built examples ship with the core;
+# every filled pblock is grown through the docs/ flow.
+name: blank-pblock
+slice:
+  territory: null          # what slice of the world this persona judges — unset
+  sources: []              # where its experience comes from — unset
+verification: confirmed-outcome   # generic law: only real-world confirmed outcomes count
+                                  # (a resolved market, a passing test, an archive label —
+                                  #  the domain decides what "confirmed" means)
+extractor: situation-outcome     # every domain reduces to: situation seen -> outcome observed
+labels: {}                       # judgment vocabulary — grown, never pre-declared
+gates:
+  min_cases: 0                   # blank starts empty; raise the gate as it lives

@@ -373,9 +373,14 @@ SCHEMAS["skill_write"] = {"type": "function", "function": {
 SCHEMAS["run_checks"] = {"type": "function", "function": {
     "name": "run_checks",
     "description": ("Run the project's own test, lint or typecheck command "
-                    "to check your work. Returns command, exit code, output."),
+                    "to check your work. Tests: by default the tests related to "
+                    "the files you changed; give tests to choose them, all: true "
+                    "for the whole suite. Returns command, scope, exit code, output."),
     "parameters": {"type": "object", "properties": {
         "kind": {"type": "string", "enum": ["test", "lint", "typecheck"]},
+        "tests": {"type": "array", "items": {"type": "string"},
+                  "description": "test files or test ids to run (tests only)"},
+        "all": {"type": "boolean", "description": "the whole test suite"},
         "force": {"type": "boolean", "description": "run even when nothing changed since they passed"}},
         "required": ["kind"]}}}
 
@@ -659,6 +664,31 @@ SCHEMAS["clarify"] = {"type": "function", "function": {
         "recommended": {"type": "string", "description": "the label you'd pick"},
         "multi": {"type": "boolean", "description": "the user may pick several"}},
         "required": ["question"]}}}
+
+SCHEMAS["pblock_propose"] = {"type": "function", "function": {
+    "name": "pblock_propose",
+    "description": ("Ask the user about ONE proposed pblock (Persona) before training it: "
+                    "they answer Yes, train it / No, skip it / Change it / Tell me more / "
+                    "Other. Ask one pblock at a time."),
+    "parameters": {"type": "object", "properties": {
+        "name": {"type": "string", "description": "lowercase_with_underscores"},
+        "purpose": {"type": "string", "description": "what it judges, one line"},
+        "data": {"type": "string", "description": "the kind of training data you would find"},
+        "number": {"type": "integer"}, "of": {"type": "integer"}},
+        "required": ["name", "purpose", "data"]}}}
+
+SCHEMAS["pblock_train"] = {"type": "function", "function": {
+    "name": "pblock_train",
+    "description": ("Train a pblock the user approved (pblock_propose answered 'Yes, train "
+                    "it') from the template (.yml) and the corpus PLAN you wrote (a .yml "
+                    "spec: craft_truths, dimensions, negations, vocabulary, real_records with "
+                    "a source each). The corpus is built from the plan; its size falls out "
+                    "of it. Follow the guides in the engine's docs folder."),
+    "parameters": {"type": "object", "properties": {
+        "name": {"type": "string"},
+        "template": {"type": "string", "description": "path to the .yml template you wrote"},
+        "spec": {"type": "string", "description": "path to the corpus plan (.yml) you wrote"}},
+        "required": ["name", "template", "spec"]}}}
 
 SCHEMAS["process_input"] = {"type": "function", "function": {
     "name": "process_input",

@@ -202,6 +202,10 @@ def register_delegate(mediator, fs_dispatch: dict, eng: Path,
             try:
                 from .options import get as _oget
                 cap = int(_oget("helpers.max_running"))
+                from .options import by_key, changed
+                if not changed(by_key("helpers.max_running")):
+                    from .machine import suggested_limit   # This machine's own size
+                    cap = suggested_limit(cap)
             except Exception:                                 # noqa: BLE001
                 cap = 3
             running = [h for h in list_handles() if h["status"] == "running"]

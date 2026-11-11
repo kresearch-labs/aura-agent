@@ -200,14 +200,23 @@ _NO_TESTS = re.compile(r"\b(ran|collected) 0 (tests?|items?)\b|\bno tests (ran|f
 
 
 def run_check(mediator: Mediator, dispatch: dict, root: Path,
-              kind: str = "test", tail_chars: int = 800) -> dict:
+              kind: str = "test", tail_chars: int = 800,
+              tests: list[str] | None = None) -> dict:
     """2.5: run the project's test / lint / typecheck command through the
-    mediator (as run_command — gated, audited, pack-limited)."""
+    mediator (as run_command — gated, audited, pack-limited). tests: only
+    these test files / ids (the whole suite when None or when the tool
+    can't be told which tests to run)."""
     from ..project_checks import check_for
     from ..tool_names import RUN_COMMAND
     check = check_for(Path(root), kind)
     if check is None:
         return {"ran": False, "why": f"no {kind} command found for this project"}
+    scope = "all"
+    if tests:
+        narrow = check.only(list(tests))
+        if narrow is not None:
+            check, scope = narrow, "these tests: " + ", ".join(tests[:6]) + (
+                f" (+{len(tests) - 6} more)" if len(tests) > 6 else "")
     if not check.available():
         return {"ran": False, "command": check.display(),
                 "why": f"{check.display()} needs {', '.join(check.needs)}, "
@@ -239,7 +248,7 @@ def run_check(mediator: Mediator, dispatch: dict, root: Path,
     except (TypeError, ValueError):
         tail = str(raw)
     res = {"ran": True, "ok": exit_code == 0, "exit_code": exit_code,
-           "command": check.display(), "why": check.why,
+           "command": check.display(), "why": check.why, "scope": scope,
            "tail": tail.strip()[-tail_chars:]}
     if kind == "test" and res["ok"] and _NO_TESTS.search(tail):
         res.update(ok=False, why="no tests ran — the command found nothing to run "

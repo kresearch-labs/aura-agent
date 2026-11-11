@@ -1,12 +1,14 @@
 """loopwatch.py — loop detection v2: duplicate-burst + stall + mentor turn.
 
-Normalize: strip digits/timestamps/random ids → `/v300`≈`/v301` - 5 identical
-normalized calls in a row → duplicate burst → abort to mentor turn - stall
-detector: the last N tool calls brought NO NEW INFORMATION — every result was
-one already seen this run. Catches what the burst check can't: ping-pong (A, B,
-A, B) and cycling through a few calls reworded. - mentor prompt: diagnosis + 3
-options + branch recommendation — injected as a system message, loop continues
-(PentAGI pattern)
+  - normalize: strip digits/timestamps/random ids → `/v300`≈`/v301`
+  - 5 identical normalized calls in a row → duplicate burst → abort to
+    mentor turn
+  - stall detector: the last N tool calls brought NO NEW INFORMATION —
+    every result was one already seen this run. Catches what the burst
+    check can't: ping-pong (A, B, A, B) and cycling through a few calls
+    read-only research task a stall.)
+  - mentor prompt: diagnosis + 3 options + branch recommendation —
+    injected as a system message, loop continues (PentAGI pattern)
 """
 from __future__ import annotations
 

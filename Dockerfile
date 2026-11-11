@@ -18,7 +18,8 @@
 #     --add-host=host.docker.internal:host-gateway).
 #   - runs as a normal user (uid 1000), not root.
 #
-# Extras: --build-arg EXTRAS=vault,web adds the browser tool; its Chromium
+# Add-ons are the user's choice (none by default): --build-arg EXTRAS=vault,web adds
+# the key vault and the browser tool; its Chromium
 # is downloaded at build time then (about 150 MB more).
 
 ARG PYTHON_IMAGE=python:3.12-slim-trixie@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
@@ -27,16 +28,16 @@ ARG PYTHON_IMAGE=python:3.12-slim-trixie@sha256:a0f57064cbdcd6285fa45f51237ab0b3
 FROM ${PYTHON_IMAGE} AS build
 COPY --from=ghcr.io/astral-sh/uv:0.12.24 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
-ARG EXTRAS=vault
+ARG EXTRAS=
 WORKDIR /src
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN uv venv /opt/aura \
- && uv pip install --python /opt/aura/bin/python ".[${EXTRAS}]"
+ && uv pip install --python /opt/aura/bin/python ".${EXTRAS:+[${EXTRAS}]}"
 
 # -------------------------------------------------------------------- run --
 FROM ${PYTHON_IMAGE}
-ARG EXTRAS=vault
+ARG EXTRAS=
 COPY --from=build /opt/aura /opt/aura
 ENV PATH=/opt/aura/bin:$PATH \
     AURA_HOME=/data \

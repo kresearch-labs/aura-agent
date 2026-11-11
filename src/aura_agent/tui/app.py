@@ -866,6 +866,11 @@ class ChatApp:
         self.running = True
         self.cancel.clear()
         self.state["killed"] = False
+        try:                                   # What Aura held before (the check after the task)
+            from ..machine import aura_bytes
+            self._mem_before = aura_bytes()
+        except Exception:      # noqa: BLE001
+            self._mem_before = None
         self.turn_t0 = time.monotonic()
         self.turn_tools = 0
         self.turn_steps = 0
@@ -961,6 +966,7 @@ class ChatApp:
         self._title(busy=False)
         if elapsed > 20:
             self._notify("Aura finished" if not problem else "Aura stopped: " + str(problem)[:60])
+        self._machine_check()
         # What was typed for the task but never reached it runs next — each
         # message as its own turn, in order
         left = [m for m in self.state.get("steer_queue", [])]
@@ -977,6 +983,52 @@ class ChatApp:
             self.run_command(c)
         if self.pending and not self.running:
             self.start_turn(self.pending.pop(0))
+
+    def _machine_check(self) -> None:
+        """After every task: code only, no model call. Memory low and Aura the
+        cause → a card to stop what Aura started; low but not Aura → one line;
+        fine → nothing.
+        """
+        try:
+            from .. import machine as M
+            r = M.after_task(getattr(self, "_mem_before", None))
+        except Exception:      # noqa: BLE001
+            return
+        if not r:
+            return
+        if not (r["aura_is_cause"] and r["programs"]):
+            self.say(cells.notice_cell(r["words"], self.s, self.cw, "warn"))
+            return
+        names = ", ".join(p["name"] for p in r["programs"][:4])
+        pick = self.choose(r["words"] + " Stop what Aura started?", [
+            ("Stop them", "stop", f"{names} — programs you asked to keep running stay", True),
+            ("Keep going", "keep", "", False)])
+        if pick != "stop":
+            return
+        stopped = []
+        try:
+            reg = getattr(self.m, "_procs", None)
+            if reg is not None:
+                reg.shutdown()
+                stopped.append("background programs")
+        except Exception:      # noqa: BLE001
+            pass
+        try:
+            from ..tools import browser
+            if browser._STATE.get("engine") is not None:
+                browser.close()
+                stopped.append("the browser")
+        except Exception:      # noqa: BLE001
+            pass
+        try:
+            from .. import lsp
+            if lsp._CLIENTS:
+                lsp.shutdown_all()
+                stopped.append("language servers")
+        except Exception:      # noqa: BLE001
+            pass
+        self.say(cells.notice_cell("stopped: " + (", ".join(stopped) or "nothing was running")
+                                   + " — they start again when needed", self.s, self.cw, "ok"))
 
     def _notify(self, text: str) -> None:
         if self.term.focused:
@@ -1220,6 +1272,9 @@ class ChatApp:
     def _team_panel(self, width: int, height: int) -> list[str]:
         """The board: your open tasks (due, blocked), what the others are
         working on and the files they planned."""
+        from ..editions import teams_present
+        if not teams_present():
+            return []
         from ..teams_ui import snapshot
         from .sidebar import _wrap
         s = self.s

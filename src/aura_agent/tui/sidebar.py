@@ -19,6 +19,8 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
     "/discuss": [("on", "talk only — no changes"), ("off", "back to work")],
     "/findaway": [("on", "offer a way to what's missing — asks before any effort"),
                   ("off", "say what's missing and what you can do")],
+    "/machine": [("on", "watch memory while working; low → the model is told once"),
+                 ("off", "only the check after each task")],
     "/team": [("status", "the hub and your connection"), ("connect <address>", "join a team's hub"),
               ("board [--all]", "your tasks · everyone's"), ("link <request>", "match it to a task"),
               ("start | done", "this chat's task"), ("decision <text>", "on the board"),
@@ -50,7 +52,7 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
 EXAMPLES: dict[str, str] = {
     "/research": "/research deep", "/assist": "/assist L1", "/mode": "/mode plan",
     "/discuss": "/discuss on", "/team": "/team connect http://192.168.1.10:3456", "/think": "/think high", "/proof": "/proof on permanent", "/tui": "/tui inline",
-    "/web": "/web all on", "/cron": "/cron add every day at 09:00 summarize new issues",
+    "/machine": "/machine on", "/web": "/web all on", "/cron": "/cron add every day at 09:00 summarize new issues",
     "/tools": "/tools on web", "/mcp": "/mcp add context7", "/add-dir": "/add-dir ~/Downloads",
     "/scope": "/scope add docs.python.org", "/rules": "/rules add never edit config/",
     "/model": "/model llama3.3:70b", "/rename": "/rename auth refactor",
@@ -73,11 +75,16 @@ def _state(app, name: str) -> str | None:
         if name == "/mode":
             return getattr(m, "mode", "act")
         if name == "/team":
+            from ..editions import teams_present
+            if not teams_present():
+                return None
             from ..teams_ui import snapshot, status_mark
             mk = status_mark(snapshot(app.ctx.session.path.stem))
             return mk[0].replace("team ", "") if mk else "not connected"
         if name == "/findaway":
             return "on" if get("assist.find_a_way") else "off"
+        if name == "/machine":
+            return "on" if get("machine.watch") else "off"
         if name == "/think":
             from ..thinking import level
             return level(loop.llm.p)
@@ -210,7 +217,11 @@ def sidebar_lines(app, width: int, height: int) -> list[str]:
             cell = ("● " if on else "○ ") + label
             row += s("accent" if on else "faint", pad(cell, col))
         out.append(row)
+    hist = _history(app)
+    if hist:
+        out += _row(s, "history", hist, width, "dim")
     out.append("")
+    out += _persona(app, width)
     # the plan — only while a step is open (a finished plan is noise)
     items = []
     try:
@@ -244,11 +255,65 @@ def sidebar_lines(app, width: int, height: int) -> list[str]:
     return out[:height]
 
 
+def _ago(ts: float) -> str:
+    import time
+    secs = max(0.0, time.time() - float(ts))
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if secs >= size:
+            return f"{int(secs // size)}{unit}"
+    return "now"
+
+
+def _history(app) -> str:
+    """How much of this chat Aura has in front of it: the whole chat, or the part
+    since the last summary — the rest stays on disk and is searched when
+    needed.
+    """
+    try:
+        info = app.ctx.session.in_view()
+    except Exception:      # noqa: BLE001
+        return ""
+    if not info["summarized"]:
+        return "whole chat in view"
+    since = f"last {_ago(info['since'])}" if info.get("since") else "recent part"
+    parts = info["summarized"]
+    return f"{since} in view · {parts} earlier part{'s' if parts != 1 else ''} summarized, all kept"
+
+
+def _persona(app, width: int) -> list[str]:
+    """PERSONA: on/off and only the pblocks in use for this chat — never the whole
+    collection (it can hold hundreds; that is persona's job), never what goes
+    on behind.
+    """
+    s = app.s
+    try:
+        from .. import pblocks as P
+        if not P.enabled():
+            return [_head(s, "persona", "○ off"), ""]
+        if P.missing_packages():
+            return [_head(s, "persona", "needs setup")] + [s("faint", ln) for ln in _wrap(
+                "reinstall Aura to add " + ", ".join(P.missing_packages()), width)] + [""]
+        used = P.panel(app.ctx.session.path.stem)
+    except Exception:      # noqa: BLE001
+        return []
+    out = [_head(s, "persona", "● on")]
+    if used:
+        for n in used:
+            out += _hang(s, s("accent", "● "), "text", n, width, 2)
+    else:
+        out.append(s("faint", "no pblocks in use · /persona"))
+    out.append("")
+    return out
+
+
 def _team(app, width: int) -> list[str]:
     """TEAM (Aura Teams): the hub, you and this chat's board task, who else is
     working on what, updates waiting for the hub. Not connected: just "TEAM
     (off)".
     """
+    from ..editions import teams_present
+    if not teams_present():
+        return []
     from ..teams_ui import snapshot
     s = app.s
     try:
@@ -308,6 +373,11 @@ def _switches(app) -> list[tuple[str, bool]]:
     try:
         from .. import websearch as W
         out.append(("web", W.consent() != "off"))
+    except Exception:      # noqa: BLE001
+        pass
+    try:
+        from ..options import get
+        out.append(("machine", bool(get("machine.watch"))))
     except Exception:      # noqa: BLE001
         pass
     return out

@@ -24,7 +24,7 @@ param(
     [switch]$NoSetup,
     [string]$From = "",
     [string]$Version = "",
-    [string]$Extras = "vault",
+    [string]$Extras = "",
     [string]$Python = "3.12"
 )
 $ErrorActionPreference = "Stop"

@@ -17,6 +17,8 @@ FILE = "outside_dirs.json"
 # asking level (the never-read file names in secrets_guard cover the rest)
 _SECRET_DIRS = (".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker",
                 ".config/gcloud", ".config/gh", ".password-store")
+# single files that hold tokens or passwords (git, pip upload, npm, curl/ftp)
+_SECRET_FILES = (".netrc", ".git-credentials", ".pypirc", ".npmrc")
 
 
 def never_reason(path: Path) -> str | None:
@@ -35,6 +37,9 @@ def never_reason(path: Path) -> str | None:
             return f"~/{d} holds keys or credentials"
         except ValueError:
             continue
+    for f in _SECRET_FILES:
+        if p == (home / f).resolve():
+            return f"~/{f} holds passwords or tokens"
     return None
 
 
@@ -111,9 +116,21 @@ def _system_dirs() -> list[Path]:
 def _expand_vars(s: str) -> str:
     """%VAR% (Windows), $VAR and ${VAR} (POSIX), $env:VAR (PowerShell) →
     their values, so a path built from them is checked like any other."""
-    s = re.sub(r"\$env:(\w+)", lambda m: os.environ.get(m.group(1), m.group(0)), s, flags=re.I)
-    s = re.sub(r"%(\w+)%", lambda m: os.environ.get(m.group(1), m.group(0)), s)
-    return os.path.expandvars(s)
+    def val(name: str, raw: str) -> str:
+        v = os.environ.get(name)
+        if v is None and name.upper() in _HOME_VARS:
+            v = str(Path.home())          # $env:USERPROFILE on Linux, $HOME on Windows: the same folder
+        return raw if v is None else v
+    s = re.sub(r"\$env:(\w+)", lambda m: val(m.group(1), m.group(0)), s, flags=re.I)
+    s = re.sub(r"%(\w+)%", lambda m: val(m.group(1), m.group(0)), s)
+    s = re.sub(r"\$\{(\w+)\}|\$(\w+)", lambda m: val(m.group(1) or m.group(2), m.group(0)), s)
+    if os.name != "nt":                   # $env:USERPROFILE\Desktop on Linux: home/u/Desktop
+        home = re.escape(str(Path.home()))
+        s = re.sub(home + r"\\[^\s\"';|&]*", lambda m: m.group(0).replace("\\", "/"), s)
+    return s
+
+
+_HOME_VARS = ("HOME", "USERPROFILE")
 
 
 def paths_in_command(cmd: str, work: Path) -> list[Path]:
@@ -130,6 +147,13 @@ def paths_in_command(cmd: str, work: Path) -> list[Path]:
         # "/r", "/s" are Windows switches; a POSIX path has two parts or starts with ~
         if p.startswith("~") or p.strip("/").count("/") >= 1:
             found.append(p)
+    # the root itself, as its own word (`ls /`, `find / -name x`): the whole
+    # drive — not a "/" between two numbers (arithmetic)
+    words = bare.split()
+    for i, w in enumerate(words[1:], 1):
+        if w.strip("\"'") == "/" and not (words[i - 1][-1:].isdigit()
+                                          or (i + 1 < len(words) and words[i + 1][:1].isdigit())):
+            found.append("/")
     work_r = Path(work).resolve()
     sysd = [d.resolve() for d in _system_dirs() if str(d)]
     out: list[Path] = []

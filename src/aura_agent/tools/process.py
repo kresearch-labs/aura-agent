@@ -53,6 +53,37 @@ WAIT_MAX = 600
 OUT_BUDGET = 6_000
 _IS_WIN = sys.platform == "win32"
 _ALL: list["Registry"] = []          # For the exit cleanup
+PARTIAL_MAX = 64 * 1024              # An unfinished line this long is kept as a line
+
+
+def stop_all() -> None:
+    """Aura is exiting: every registry stops what wasn't asked to keep running.
+    """
+    for reg in list(_ALL):
+        try:
+            reg.shutdown()
+        except Exception:                            # noqa: BLE001
+            pass
+
+
+def stop_on_signals() -> None:
+    """A TERM or HUP (the terminal closed, the service stopped, `kill`)
+    ends Aura through its normal exit, so what it started is stopped too."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            if signal.getsignal(sig) in (signal.SIG_DFL, None):
+                signal.signal(sig, lambda signum, _frame: sys.exit(128 + signum))
+        except (OSError, ValueError):
+            pass
+
+
+import atexit as _atexit  # noqa: E402
+_atexit.register(stop_all)
 
 
 # --------------------------------------------------------------- the OS --
@@ -447,6 +478,10 @@ class Registry:
         try:
             from ..options import get as _opt
             cap = int(_opt("background.max_running"))
+            from ..options import by_key, changed
+            if not changed(by_key("background.max_running")):
+                from ..machine import suggested_limit   # This machine's own size
+                cap = suggested_limit(cap)
         except Exception:                            # noqa: BLE001
             cap = MAX_RUNNING
         if len(left) >= cap:
@@ -638,7 +673,8 @@ class Registry:
         return out
 
     def shutdown(self) -> None:
-        """Aura is exiting: stop what wasn't asked to keep running."""
+        """Aura (or the run that owns this registry) is ending: stop what
+        wasn't asked to keep running."""
         for p in list(self.procs.values()):
             if not p.keep and p.running():
                 try:
@@ -646,6 +682,15 @@ class Registry:
                 except Exception:                    # noqa: BLE001
                     pass
                 self._remember(forget=p.id)
+
+    def close(self) -> None:
+        """The run that owns this registry has ended (a scheduled job, a
+        headless run): what it started ends with it, and the registry goes."""
+        self.shutdown()
+        try:
+            _ALL.remove(self)
+        except ValueError:
+            pass
 
 
 _PROMPT = re.compile(r"(\(y/n\)|\[y/n\]|\(yes/no\)|\[yes/no\]|[?:>\]\)]\s*$)", re.I)
@@ -710,7 +755,9 @@ def _spawn(cmd: str, workspace: Path, notebook: Path, network: bool,
         argv = SO.seatbelt_argv(cmd, workspace, network)
         note = f"sandbox: seatbelt (fs={workspace}, network={net_word})"
     else:
-        argv, note = wrap_argv(cmd, workspace, network=network or port)
+        # A background program has its own end — not tied to this Aura process
+        # like a command
+        argv, note = wrap_argv(cmd, workspace, network=network or port, die_with_aura=False)
         if argv is not None and sites and not (network or port):
             # bubblewrap cut the network off: the same relay as run_command
             import shlex
@@ -777,6 +824,9 @@ def _pump(p: Proc) -> None:
                     p.last_out = time.monotonic()
                     buf = p.partial + text
                     *done, p.partial = buf.split("\n")
+                    if len(p.partial) > PARTIAL_MAX:     # Output without line breaks
+                        done.append(p.partial)
+                        p.partial = ""
                     for line in done:
                         p.lines.append(line)
                         p.total += 1

@@ -66,76 +66,141 @@ RESERVED_NAMES = {"twoask", "referee", "selftest", "smoke", "va",
                   "events", "audit"}   # audit.jsonl = the ledger, not a chat
 
 
+LIST_CACHE = ".list-cache.json"   # Per chat: how far it was read, and what it said
+_LIST_CACHE_V = 1
+_TAIL = 1024
+
+
+def _new_scan() -> dict:
+    return {"count": 0, "first_user": "", "last_ts": None, "first_ts": None, "title": "",
+            "chars": 0, "meta": {}, "flags": {},
+            "use": {"in": 0, "out": 0, "calls": 0, "models": []},   # What the chat used
+            "tasks": [],
+            "files": []}
+
+
+def _scan_record(st: dict, r: dict) -> None:
+    from .notes import is_users_words, users_words
+    use = st["use"]
+    if r.get("record") == "title":
+        st["title"] = str(r.get("title") or "")
+        return
+    if r.get("record") == "meta":
+        st["meta"] = st["meta"] or {k: r.get(k) for k in ("id", "parent")}
+        return
+    if r.get("record") == "flags":
+        st["flags"].update(r.get("flags") or {})
+        return
+    if r.get("record") == "settings":
+        mdl = (r.get("settings") or {}).get("model")
+        if mdl and mdl not in use["models"]:
+            use["models"].append(mdl)
+        return
+    u = r.get("usage") or {}
+    if isinstance(u, dict):
+        use["in"] += int(u.get("prompt_tokens") or 0)
+        use["out"] += int(u.get("completion_tokens") or 0)
+    use["calls"] += len(r.get("tool_calls") or [])
+    if r.get("record") == "compact":
+        st["chars"] = len(str(r.get("summary", "")))     # The summary replaced the rest
+        return
+    st["count"] += 1
+    if is_users_words(r):
+        said = " ".join(users_words(r).split())
+        if not st["first_user"]:
+            st["first_user"] = said[:60]
+        if said and not _small_talk(said) and said not in st["tasks"]:
+            st["tasks"].append(said)
+    for c in r.get("tool_calls") or []:
+        fn = (c or {}).get("function") or {}
+        if fn.get("name") in ("write_file", "edit_file"):
+            try:
+                path = str(json.loads(fn.get("arguments") or "{}").get("path") or "")
+            except (json.JSONDecodeError, AttributeError):
+                path = ""
+            if path and path not in st["files"]:
+                st["files"].append(path)
+    if r.get("ts"):
+        st["first_ts"] = st["first_ts"] or r["ts"]
+        st["last_ts"] = r["ts"]
+    st["chars"] += len(str(r.get("content") or "")) + len(str(r.get("tool_calls") or ""))
+
+
+def _tail_of(f, offset: int) -> str:
+    import hashlib
+    n = min(_TAIL, offset)
+    f.seek(offset - n)
+    return hashlib.sha256(f.read(n)).hexdigest()
+
+
+def _scan_file(path: Path, cached: dict | None) -> dict:
+    """What a chat file says, reading only what was added since the last
+    listing (a chat file only grows; one that was rewritten — a rewind — is
+    read again from the start)."""
+    size = path.stat().st_size
+    with path.open("rb") as f:
+        start, st = 0, _new_scan()
+        if cached and 0 < cached.get("offset", 0) <= size \
+                and _tail_of(f, cached["offset"]) == cached.get("tail"):
+            start, st = cached["offset"], cached["state"]
+        f.seek(start)
+        end = start
+        for raw in f:
+            if not raw.endswith(b"\n"):
+                break                        # A line still being written: next time
+            end += len(raw)
+            try:
+                r = json.loads(raw.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(r, dict):
+                _scan_record(st, r)
+        tail = _tail_of(f, end) if end else ""
+    return {"offset": end, "tail": tail, "state": st}
+
+
 def list_sessions(engagement_root: Path) -> list[dict]:
     """Last used first (the time of the last message), with message count,
     the user's first words, when it was made and how big it is."""
-    from .notes import is_users_words, users_words
+    root = Path(engagement_root)
+    cache_path = root / "sessions" / LIST_CACHE
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cache.get("v") != _LIST_CACHE_V:
+            cache = {}
+    except (OSError, ValueError):
+        cache = {}
+    old = cache.get("files") or {}
+    new: dict = {}
     out = []
     for f in _candidate_files(engagement_root):
-        count, first_user, last_ts, first_ts, title, chars = 0, "", None, None, "", 0
-        meta: dict = {}
-        flags: dict = {}
-        use = {"in": 0, "out": 0, "calls": 0, "models": []}   # What the chat used
-        tasks: list[str] = []
-        files: list[str] = []
-        for line in f.read_text(encoding="utf-8").splitlines():
-            try:
-                r = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if r.get("record") == "title":
-                title = str(r.get("title") or "")
-                continue
-            if r.get("record") == "meta":
-                meta = meta or r
-                continue
-            if r.get("record") == "flags":
-                flags.update(r.get("flags") or {})
-                continue
-            if r.get("record") == "settings":
-                mdl = (r.get("settings") or {}).get("model")
-                if mdl and mdl not in use["models"]:
-                    use["models"].append(mdl)
-                continue
-            u = r.get("usage") or {}
-            if isinstance(u, dict):
-                use["in"] += int(u.get("prompt_tokens") or 0)
-                use["out"] += int(u.get("completion_tokens") or 0)
-            use["calls"] += len(r.get("tool_calls") or [])
-            if r.get("record") == "compact":
-                chars = len(str(r.get("summary", "")))     # The summary replaced the rest
-                continue
-            count += 1
-            if is_users_words(r):
-                said = " ".join(users_words(r).split())
-                if not first_user:
-                    first_user = said[:60]
-                if said and not _small_talk(said) and said not in tasks:
-                    tasks.append(said)
-            for c in r.get("tool_calls") or []:
-                fn = (c or {}).get("function") or {}
-                if fn.get("name") in ("write_file", "edit_file"):
-                    try:
-                        path = str(json.loads(fn.get("arguments") or "{}").get("path") or "")
-                    except (json.JSONDecodeError, AttributeError):
-                        path = ""
-                    if path and path not in files:
-                        files.append(path)
-            if r.get("ts"):
-                first_ts = first_ts or r["ts"]
-                last_ts = r["ts"]
-            chars += len(str(r.get("content") or "")) + len(str(r.get("tool_calls") or ""))
+        try:
+            scan = _scan_file(f, old.get(f.name))
+        except OSError:
+            continue
+        new[f.name] = scan
+        st = scan["state"]
+        meta, flags, last_ts, first_ts = st["meta"], st["flags"], st["last_ts"], st["first_ts"]
         used = last_ts or f.stat().st_mtime
         out.append({"file": f.name, "id": str(meta.get("id") or chat_id(f.name)),
                     "parent": meta.get("parent"), "pinned": bool(flags.get("pinned")),
-                    "archived": bool(flags.get("archived")), "usage": use,
+                    "archived": bool(flags.get("archived")), "usage": st["use"],
                     "active_s": round((last_ts or 0) - (first_ts or 0)) if first_ts and last_ts else 0,
-                    "messages": count, "preview": first_user,
-                    "tasks": tasks, "files": files,
-                    "title": title, "mtime": f.stat().st_mtime,
+                    "messages": st["count"], "preview": st["first_user"],
+                    "tasks": st["tasks"], "files": st["files"],
+                    "title": st["title"], "mtime": f.stat().st_mtime,
                     "made_ts": first_ts or f.stat().st_mtime, "used_ts": used,
-                    "tokens": chars // 4,
+                    "tokens": st["chars"] // 4,
                     "age_min": round((time.time() - used) / 60, 1)})
+    if new != old and (root / "sessions").is_dir():
+        try:
+            tmp = cache_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"v": _LIST_CACHE_V, "files": new}, ensure_ascii=False),
+                           encoding="utf-8")
+            import os
+            os.replace(tmp, cache_path)
+        except OSError:
+            pass                              # The cache is only a shortcut
     out.sort(key=lambda s: s["used_ts"], reverse=True)
     return out
 
@@ -207,6 +272,10 @@ def trash_chat(engagement_root: Path, path: Path) -> Path:
         n += 1
     path.replace(dest)
     os.utime(dest, None)                   # The time it was deleted
+    try:                                   # Its view (a shortcut, rebuilt when needed)
+        path.with_name(path.stem + ".view.json").unlink()
+    except OSError:
+        pass
     return dest
 
 

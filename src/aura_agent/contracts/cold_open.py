@@ -2,7 +2,6 @@
 
 Laws implemented (96-ui-law-extract.md):
   35 Wordmark: 4-row AURA art in the 4-marker grammar, per-ROW gradient
-      , two-tone halves, responsive (full/compact/text/hidden).
   Truthful banner: every fact carries a tier (PROBED/PREDICTED/
       SNAPSHOT); endpoint shows probe verdict; login≠serving.
 """

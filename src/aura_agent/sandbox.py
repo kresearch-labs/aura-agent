@@ -139,8 +139,32 @@ def scrubbed_env() -> dict:
     return env
 
 
+def hidden_paths() -> list[Path]:
+    """What a sandboxed command never sees: the folders and files that hold
+    keys (outside.py's list) and Aura's own folder (settings, keys, chats)."""
+    from .outside import _SECRET_DIRS, _SECRET_FILES
+    from .paths import aura_home
+    home = Path.home()
+    out = [home / d for d in _SECRET_DIRS] + [home / f for f in _SECRET_FILES]
+    try:
+        out.append(aura_home())
+    except Exception:                                  # noqa: BLE001
+        pass
+    return out
+
+
+def sandbox_cache_env(env: dict) -> dict:
+    """Home is read-only inside the sandbox: tools that keep a cache there
+    (pip, npm, uv, anything on XDG) write it under /tmp instead."""
+    base = "/tmp/aura-cache"
+    for k, v in (("XDG_CACHE_HOME", base), ("PIP_CACHE_DIR", base + "/pip"),
+                 ("npm_config_cache", base + "/npm"), ("UV_CACHE_DIR", base + "/uv")):
+        env.setdefault(k, v)
+    return env
+
+
 def wrap_argv(cmd: str, engagement_root: Path,
-              network: bool = False) -> tuple[list[str] | None, str]:
+              network: bool = False, die_with_aura: bool = True) -> tuple[list[str] | None, str]:
     """Wrap a shell command line for bubblewrap. Returns (argv, note).
     argv None = sandbox unavailable (caller runs unsandboxed + keeps note)."""
     if not bwrap_available():
@@ -148,6 +172,7 @@ def wrap_argv(cmd: str, engagement_root: Path,
     root = Path(engagement_root).resolve()
     argv = [
         "bwrap",
+        *(["--die-with-parent"] if die_with_aura else []),   # A command ends with Aura
         "--ro-bind", "/", "/",                     # Fs: read everything...
         "--bind", str(root), str(root),            # ...write ONLY engagement
         "--bind", "/tmp", "/tmp",                  # ...and tmp
@@ -155,11 +180,18 @@ def wrap_argv(cmd: str, engagement_root: Path,
         "--proc", "/proc",
         "--bind", "/run", "/run",
     ]
-    home = Path.home()
-    if str(root) != str(home) and home not in root.parents:
-        # the real home stays read-only; $HOME inside maps to a tmpfs so
-        # dotfile writes by tools land in the sandbox, not the operator's
-        argv += ["--tmpfs", str(home)]
+    # Home stays readable (read-only, like the rest of the system): programs
+    # installed there — a project's.venv, uv's Pythons, ~/.local/bin, nvm,
+    # cargo — must run. What holds keys is hidden: the credential folders and
+    # files, and Aura's own folder
+    hidden = hidden_paths()
+    for p in hidden:
+        if p.is_dir():
+            argv += ["--tmpfs", str(p)]
+        elif p.is_file():
+            argv += ["--ro-bind", "/dev/null", str(p)]
+    if any(h == root or h in root.parents for h in hidden if h.is_dir()):
+        argv += ["--bind", str(root), str(root)]   # The project inside one stays usable
     if not network:
         argv.append("--unshare-net")               # BUILD 5: egress off
     argv += ["--", "bash", "-c", cmd]
@@ -204,11 +236,13 @@ def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,
     sites = proxy is not None
     if SO.seatbelt_available() and os.environ.get("AURA_SANDBOX") != _SANDBOX_DISABLED:
         # Seatbelt with the network off still allows localhost: the proxy
-        proc = subprocess.run(SO.seatbelt_argv(cmd, engagement_root, network),
-                              capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
+        proc = SO.run_tree(SO.seatbelt_argv(cmd, engagement_root, network), shell=False,
+                           timeout=timeout, cwd=cwd, env=env)
         return proc, ("sandbox: seatbelt (fs=%s, network=%s)"
                       % (Path(engagement_root).resolve(), _net_word(network, sites)))
     argv, note = wrap_argv(cmd, engagement_root, network=network)
+    if argv is not None:
+        sandbox_cache_env(env)
     if argv is not None:
         for sock in _notary_sockets(extra_env):
             add_bind(argv, sock)                           # Notary mount
@@ -228,9 +262,7 @@ def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,
             local_through(env)
     try:
         if argv is not None:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=timeout,
-                cwd=cwd, env=env)
+            proc = SO.run_tree(argv, shell=False, timeout=timeout, cwd=cwd, env=env)
             err = (proc.stderr or "").strip()
             if proc.returncode != 0 and err.startswith("bwrap: "):
                 # OS refused bwrap (e.g. AppArmor userns policy) — fall
@@ -246,8 +278,8 @@ def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,
             if sites and abi >= 4:
                 from .netproxy import local_through
                 local_through(env)               # Only the proxy's port is open
-            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                                  timeout=timeout, cwd=cwd, env=env, preexec_fn=pre)
+            proc = SO.run_tree(cmd, shell=True, timeout=timeout, cwd=cwd, env=env,
+                               preexec_fn=pre)
             if proc.returncode != 126:
                 return proc, ("sandbox: landlock v%d (fs=%s, network=%s)"
                               % (abi, Path(engagement_root).resolve(),
@@ -274,9 +306,15 @@ def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,
                                           network=network,
                                           extra_env=extra_env)
         if dargv is not None:
-            proc = subprocess.run(
-                dargv, capture_output=True, text=True, timeout=timeout,
-                cwd=cwd, env=env)
+            # a named container: on a timeout the container itself is stopped
+            # (stopping the docker client alone leaves it running)
+            import secrets
+            cname = "aura-" + secrets.token_hex(6)
+            dargv = dargv[:2] + ["--name", cname] + dargv[2:]
+            proc = SO.run_tree(
+                dargv, shell=False, timeout=timeout, cwd=cwd, env=env,
+                on_timeout=lambda: subprocess.run(["docker", "kill", cname],
+                                                  capture_output=True, timeout=20))
             dnote = (f"sandbox: docker[{img}] (fs={engagement_root}, "
                      f"network={'on' if network else 'off'})")
             derr = (proc.stderr or "").strip()
@@ -284,9 +322,7 @@ def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,
                 # docker daemon also refused — plain + truthful
                 note = (f"sandbox setup FAILED: {derr.splitlines()[0][:120]}"
                         f" — ran UNSANDBOXED")
-                proc = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True,
-                    timeout=timeout, cwd=cwd, env=env)
+                proc = SO.run_tree(cmd, shell=True, timeout=timeout, cwd=cwd, env=env)
                 return proc, note
             return proc, dnote
         # no engine available — refuse when required, else plain and said
@@ -303,9 +339,7 @@ def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,
                           "file/network boundary"
                           + ("; network: allowed sites through Aura's proxy for programs that "
                              "use the proxy setting (not enforced here)" if sites else ""))
-        proc = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=cwd, env=env)
+        proc = SO.run_tree(cmd, shell=True, timeout=timeout, cwd=cwd, env=env)
         return proc, note
     except subprocess.TimeoutExpired:
         raise

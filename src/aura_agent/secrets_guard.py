@@ -1,10 +1,7 @@
 """secrets_guard.py — (tool-output firewall) + (secrets boundary).
 
-  firewalls paper: Tool-Input Firewall (Minimizer) + Tool-Output
         Firewall (Sanitizer) at the agent-tool interface — model-agnostic,
-  SlotGuard: local boundary rewrites tool outputs pre-provider;
         format-preserving, typed slots.
-  secrets-without-secrets field pattern: "secrets enter the agent's
         environment at the tool boundary, not in the prompt... nothing
         sensitive in the session JSONL."
 

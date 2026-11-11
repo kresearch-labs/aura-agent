@@ -251,18 +251,27 @@ RELAY = ("import socket,threading,sys\n"
          "p,u=int(sys.argv[1]),sys.argv[2]\n"
          "s=socket.socket();s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"
          "s.bind(('127.0.0.1',p));s.listen(64)\n"
-         "def pipe(a,b):\n"
+         # One direction ending is passed on with shutdown — a close while the
+         # other thread is blocked in recv sends nothing on Linux, so the
+         # client waited forever for the end of a reply; both sockets close
+         # once both directions are done
+         "def pipe(a,b,left):\n"
          "  try:\n"
          "    while True:\n"
          "      d=a.recv(65536)\n"
          "      if not d: break\n"
          "      b.sendall(d)\n"
          "  except OSError: pass\n"
-         "  finally:\n"
+         "  try: b.shutdown(socket.SHUT_WR)\n"
+         "  except OSError: pass\n"
+         "  with left[1]:\n"
+         "    left[0]-=1;last=left[0]==0\n"
+         "  if last:\n"
          "    for x in (a,b):\n"
          "      try: x.close()\n"
          "      except OSError: pass\n"
          "while True:\n"
          "  c,_=s.accept();v=socket.socket(socket.AF_UNIX);v.connect(u)\n"
-         "  threading.Thread(target=pipe,args=(c,v),daemon=True).start()\n"
-         "  threading.Thread(target=pipe,args=(v,c),daemon=True).start()\n")
+         "  left=[2,threading.Lock()]\n"
+         "  threading.Thread(target=pipe,args=(c,v,left),daemon=True).start()\n"
+         "  threading.Thread(target=pipe,args=(v,c,left),daemon=True).start()\n")

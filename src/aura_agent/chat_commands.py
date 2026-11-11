@@ -1154,6 +1154,10 @@ def _team(ctx, parts, line):
     run here, the same code. Questions come as cards; the hub token is typed
     hidden. In fullscreen `/team board` opens the board beside the chat.
     """
+    from .editions import teams_present
+    if not teams_present():
+        ui.info("Aura Teams isn't part of this version of Aura.")
+        return Result()
     from .cli import build_parser, cmd_teams
     from . import teams_ui
     rest = parts[1:]
@@ -1650,6 +1654,36 @@ def _findaway(ctx, parts, line):
     return Result()
 
 
+@command("/machine")
+def _machine(ctx, parts, line):
+    """machine.py: the memory watch while Aura works; the check after each task is
+    always on. Bare: the machine and what Aura holds.
+    """
+    from .options import get, set_
+    from . import machine as M
+    arg = parts[1].lower() if len(parts) > 1 else ""
+    if arg in ("on", "off"):
+        set_("machine.watch", arg == "on")
+        ui.success("machine watch: on — while Aura works, low memory is told to the model once "
+                   "(no extra model call)" if arg == "on" else
+                   "machine watch: off — only the check after each task")
+        return Result()
+    if arg:
+        ui.info("usage: /machine · /machine on|off")
+        return Result()
+    prof = M.profile()
+    mem = M.memory()
+    progs = M.own_programs()
+    print(ui.muted(f"  this machine: {prof.get('ram_gb', '?')} GB memory, {prof.get('cpus', '?')} CPUs"
+                   + (f" · {mem[0] / 1024 ** 3:.1f} GB free now" if mem else "")))
+    print(ui.muted(f"  Aura holds {sum(p['bytes'] for p in progs) / 1024 ** 3:.1f} GB"
+                   + "".join(f"\n    {p['name']}  {p['bytes'] / 1024 ** 2:,.0f} MB"
+                             for p in sorted(progs, key=lambda p: -p["bytes"])[:8])))
+    print(ui.muted("  watch while working: " + ("on" if get("machine.watch") else "off")
+                   + " · /machine on|off"))
+    return Result()
+
+
 @command("/think")
 def _think(ctx, parts, line):
     """How hard a reasoning model thinks (thinking.py): this chat; with
@@ -1862,3 +1896,8 @@ def _vault(ctx, parts, line):
 
 # old name kept working
 _COMMANDS["/results"] = _findings
+
+
+# Persona (pblocks) commands live in their own module; loading it here
+# registers /persona with the same dispatcher.
+from . import persona_commands  # noqa: E402,F401

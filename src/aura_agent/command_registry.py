@@ -60,6 +60,8 @@ COMMANDS: list[CommandSpec] = [
                 "usage: /focus", group="basics"),
     CommandSpec("/findaway", "when something is missing, Aura offers to find a way (asks first) — on/off",
                 "usage: /findaway · /findaway on|off", group="model"),
+    CommandSpec("/machine", "the machine and what Aura holds; watch memory while working — on/off",
+                "usage: /machine · /machine on|off", group="model"),
     CommandSpec("/think", "how hard the model thinks: auto, off, low, medium, high (this chat)",
                 "usage: /think · /think off|low|medium|high|auto [permanent]", group="model"),
     CommandSpec("/sidebar", "the fullscreen sidebar: model, context, switches, plan, changed files (on/off)",
@@ -118,6 +120,10 @@ COMMANDS: list[CommandSpec] = [
                 group="project"),
     CommandSpec("/rules", "project constraints — add, remove, list what must hold",
                 "usage: /rules  ·  /rules add <text>  ·  /rules rm <n>",
+                group="project"),
+    CommandSpec("/persona", "Persona: your pblocks — switch Persona on/off, choose which pblocks "
+                "this chat uses, add, discard, delete, or train new ones",
+                "usage: /persona · on|off · use|stop|discard|delete <name> · add <path> · train [what you want to work on] · learned|review [name] · apply <file>",
                 group="project"),
     CommandSpec("/team", "Aura Teams: the hub, your connection, the board, link/start/done, "
                 "decisions, waiting updates, the chat page",
@@ -236,3 +242,13 @@ def groups() -> dict[str, list[CommandSpec]]:
 def daily_five() -> list[CommandSpec]:
     by_name = {c.name: c for c in COMMANDS}
     return [by_name[n] for n in _DAILY_FIVE]
+
+
+# a copy of Aura shipped without Aura Teams has no /team or /decision
+def _without_teams() -> None:
+    from .editions import teams_present
+    if not teams_present():
+        COMMANDS[:] = [c for c in COMMANDS if c.name not in ("/team", "/decision")]
+
+
+_without_teams()

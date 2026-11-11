@@ -27,7 +27,7 @@ set -eu
 
 UV_VERSION="0.12.24"
 PYTHON_VERSION="3.12"
-EXTRAS="vault"
+EXTRAS=""
 AURA_REPO="kresearch-labs/aura-agent"
 AURA_TAG=""                   # written into the copy attached to a release (vX.Y.Z); empty = the newest
 FROM=""

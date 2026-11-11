@@ -56,6 +56,7 @@ class MCPServer:
     timeout: float = 30.0
     # runtime
     _proc: subprocess.Popen | None = None
+    _job: object = None                 # Windows: the job its process tree lives in
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _next_id: int = 1
     tools: list[dict] = field(default_factory=list)   # [{name, description
@@ -67,10 +68,17 @@ class MCPServer:
             return
         env = {**os.environ, **self.env}
         try:
+            # its own process group / job: a server started through a launcher
+            # (npx, uvx, a shell script) is several processes, and stopping it
+            # must stop all of them
             self._proc = subprocess.Popen(
                 [self.command, *self.args],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1)
+                stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1,
+                **({} if os.name == "nt" else {"start_new_session": True}))
+            if os.name == "nt":
+                from .sandbox_os import _job_for
+                self._job = _job_for(self._proc.pid)
         except FileNotFoundError as e:
             raise MCPError(f"mcp '{self.name}': cannot spawn "
                            f"'{self.command}': {e}") from e
@@ -94,15 +102,23 @@ class MCPServer:
             pass
 
     def stop(self) -> None:
-        if self._proc and self._proc.poll() is None:
+        """The server and everything it started."""
+        p = self._proc
+        if p is not None:
+            if os.name == "nt":
+                from .sandbox_os import _close_job
+                if self._job is not None:
+                    _close_job(self._job)       # The whole tree ends with the job
+                    self._job = None
+                elif p.poll() is None:
+                    p.kill()
+            else:
+                from .sandbox_os import _stop_group
+                _stop_group(p)
             try:
-                self._proc.terminate()
-                self._proc.wait(timeout=3)
+                p.wait(timeout=3)
             except Exception:
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
+                pass
         self._proc = None
 
     # -------------------------------------------------------------- protocol

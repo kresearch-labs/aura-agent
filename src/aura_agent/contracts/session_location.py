@@ -66,7 +66,7 @@ def git_diff_checked(repo: str | Path) -> tuple[str, str]:
 
 # ---------------------------------------------------------------- order
 def extract_diff_block(text: str) -> str:
-    """Pull the LAST ```diff ...``` fenced block out of a session
+    """FP-1: pull the LAST ```diff ...``` fenced block out of a session
     transcript and return appliable diff content. Transcripts are JSONL —
     newlines inside the JSON string are ESCAPED (\\n), so we unescape
     (parse each line as JSON when possible) BEFORE matching fences."""
