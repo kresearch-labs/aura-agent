@@ -21,9 +21,11 @@ from ..mediator import BlastRadius, Mediator, ToolSpec, Violation
 from .artifacts import store_artifact
 from ..tool_names import BROWSER_RUN
 
-BROWSER_MISSING_MSG = (
-    "browser extra not installed — run: pip install 'aura-agent[web]' "
-    "&& playwright install chromium (air-gap: set PLAYWRIGHT_BROWSERS_PATH)")
+def browser_missing_msg() -> str:
+    from ..lifecycle import add_extra_command
+    return ("Aura's browser part isn't added — run: " + add_extra_command("web")
+            + " (it drives the Edge or Chrome already installed; without one: "
+              "playwright install chromium · air-gap: set PLAYWRIGHT_BROWSERS_PATH)")
 INTERACTIVE = ("button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox",
                "menuitem", "tab", "option", "switch", "slider", "spinbutton", "listbox")
 SUBMIT_WORDS = re.compile(
@@ -232,7 +234,7 @@ def _engine(headless: bool = True):
             _STATE["engine"] = ENGINE_FACTORY()
         else:
             if not playwright_available():
-                raise Violation(BROWSER_MISSING_MSG)
+                raise Violation(browser_missing_msg())
             _STATE["engine"] = PlaywrightEngine(headless=headless)
             atexit.register(close)
     return _STATE["engine"]
@@ -334,7 +336,7 @@ def register(mediator: Mediator, dispatch: dict) -> None:
         if not actions:
             raise Violation("browser_run: actions required")
         if ENGINE_FACTORY is None and not playwright_available():
-            return json.dumps({"status": "unavailable", "message": BROWSER_MISSING_MSG})
+            return json.dumps({"status": "unavailable", "message": browser_missing_msg()})
         eng = _engine(bool(args.get("headless", True)) and not _show())
         results = []
         for i, act in enumerate(actions):

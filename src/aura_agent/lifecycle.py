@@ -43,6 +43,22 @@ def layout() -> dict | None:
         return None
 
 
+def add_extra_command(extra: str) -> str:
+    """The one command that adds an optional part (web, pdf, vault) to this copy
+    of Aura. An installed copy lives in its own environment that pip can't reach,
+    so it is the installer again, with the part added (data and settings stay);
+    a pip or source install uses pip."""
+    lay = layout()
+    if lay and lay.get("method") == "uv-tool":
+        have = [e for e in str(lay.get("extras") or "").split(",") if e]
+        parts = ",".join(dict.fromkeys(have + [extra]))
+        base = f"https://github.com/{lay.get('repo') or 'kresearch-labs/aura-agent'}/releases/latest/download"
+        if os.name == "nt":
+            return f"& ([scriptblock]::Create((irm {base}/install.ps1))) -Extras {parts}"
+        return f"curl -fsSL {base}/install.sh | sh -s -- --extras={parts}"
+    return f"pip install 'aura-agent[{extra}]'"
+
+
 def _uv_env(lay: dict) -> dict:
     env = dict(os.environ)
     env.update({"UV_TOOL_DIR": lay.get("tool_dir", ""), "UV_TOOL_BIN_DIR": lay.get("bin_dir", ""),

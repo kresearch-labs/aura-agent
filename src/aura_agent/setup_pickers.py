@@ -78,8 +78,8 @@ def availability() -> dict[str, tuple[bool, str]]:
                 missing = "no local endpoint — install Ollama (ollama.com) " \
                           "or run 'aura setup minimal'"
             elif cid == "browser":
-                missing = "pip install 'aura-agent[web]' && " \
-                          "playwright install chromium"
+                from .lifecycle import add_extra_command
+                missing = add_extra_command("web")
         out[cid] = (any_ready, missing)
     return out
 

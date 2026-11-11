@@ -63,7 +63,11 @@ def explain_error(exc: BaseException, base_url: str | None = None) -> list[str]:
         mod = s.split("No module named")[-1].strip().strip("'\"")
         kind, pkg = dep_kind(mod)
         out.append(f"why     : {kind} part '{mod}' is not installed")
-        out.append(f"fix     : python -m pip install {pkg}")
+        if kind == "optional" and pkg in set(_OPTIONAL.values()):
+            from .lifecycle import add_extra_command
+            out.append(f"fix     : {add_extra_command(pkg)}")
+        else:
+            out.append(f"fix     : python -m pip install {pkg}")
         return out
 
     out.append("fix     : run 'aura doctor' for a health check, or re-run setup:")
@@ -120,14 +124,13 @@ def _plain_what(exc: BaseException) -> str:
 # What pyproject.toml lists (import name → package): required vs optional
 _REQUIRED = {"nacl": "pynacl", "wcwidth": "wcwidth", "keyring": "keyring",
              "numpy": "numpy", "onnxruntime": "onnxruntime", "tokenizers": "tokenizers"}
-_OPTIONAL = {"playwright": "'aura-agent[web]'", "pypdf": "'aura-agent[pdf]'",
-             "cryptography": "'aura-agent[vault]'", "pytest": "'aura-agent[test]'",
-             "hypothesis": "'aura-agent[test]'",
+_OPTIONAL = {"playwright": "web", "pypdf": "pdf", "cryptography": "vault",
+             "pytest": "test", "hypothesis": "test",
 }
 
 
 def dep_kind(mod: str) -> tuple[str, str]:
-    """('required' | 'optional', what to pip install) for a missing module."""
+    """('required' | 'optional', the package or optional part) for a missing module."""
     top = mod.split(".")[0]
     if top in _REQUIRED:
         return "required", _REQUIRED[top]

@@ -200,7 +200,10 @@ def _ollama_fit(url: str, hw: dict, models: list[str]) -> list[str]:
     if models:
         print("  models already here:")
         for m in models:
-            if sizes.get(m):
+            if m.endswith(":cloud") or m.endswith("-cloud"):
+                print(f"    ☁ {m} — runs on Ollama's cloud, not on this computer "
+                      "(needs your ollama.com sign-in)")
+            elif sizes.get(m):
                 kind, words = LF.verdict(LF.need_gb(sizes[m]), hw)
                 mark = {"fast": "✓", "slow": "~", "too big": "✗"}[kind]
                 print(f"    {mark} {m} — {words}")

@@ -423,8 +423,8 @@ def _safety_asks(ctx) -> list:
                    f"{SW.VERSION}, {SW.PACKAGE_SIZE / 1e6:.0f} MB from nuget.org)?",
                    [("yes", "download it now — checked against nuget.org's published "
                             "SHA-512, kept in Aura's folder, nothing installed into Windows"),
-                    ("no", "not now — 'aura setup safety' asks again")],
-                   default="no",
+                    ("no", "not now — commands run with your own rights; 'aura setup safety' asks again")],
+                   default="yes",
                    why="commands then write only in the project and temp folders, and "
                        "reach only the sites you allow")]
     return get + [Ask("sandbox.required", "Should commands run only inside the sandbox?",
@@ -438,6 +438,8 @@ def _safety_asks(ctx) -> list:
 
 def _safety_save(ctx, ans) -> list:
     out = []
+    if str(ans.get("sandbox.mxc", "")).lower() in ("no", "n", "false"):
+        ctx["_sandbox_declined"] = True
     if str(ans.get("sandbox.mxc", "")).lower() in ("yes", "y", "true"):
         from . import sandbox_win as SW
         try:
@@ -470,6 +472,9 @@ def _safety_check(ctx) -> Proof:
     if req:
         return Proof(False, "commands must be sandboxed, but no sandbox works here — "
                      "every command would be refused", "a working sandbox", fix)
+    if ctx.get("_sandbox_declined"):
+        return Proof(True, "commands run with your own rights — you chose no sandbox for now "
+                     "(Aura says so on each command · add one later: aura setup safety)")
     return Proof(False, "commands run with your own rights (no sandbox works here; "
                  "Aura says so on each one)", "a sandbox", fix)
 
@@ -774,8 +779,9 @@ def _web_look(ctx) -> list:
                      W.consent() or "", "not decided yet"), "info")]
     br = installed_browsers()
     out.append(Found("browsers on this machine: " + (", ".join(br) if br else "none found")
-                     + (" · Playwright installed" if _have_playwright() else
-                        " · Playwright not installed (pip install 'aura-agent[web]')"),
+                     + (" · Aura's browser part is added" if _have_playwright() else
+                        " · Aura's browser part isn't added yet (optional — for pages that "
+                        "need JavaScript)"),
                      "ok" if br and _have_playwright() else "info"))
     return out
 
@@ -807,11 +813,13 @@ def _web_asks(ctx) -> list:
     br = installed_browsers()
     asks.append(Ask("browser.engine", "Which browser should Aura use for web pages?",
                     [("installed", "the one on this machine"
-                      + (f" ({' / '.join(br)})" if br else " (none found)")),
+                      + (f" ({' / '.join(br)})" if br else " (none found)")
+                      + ("" if _have_playwright() else " — driven by Aura's browser part, "
+                         "added with one command shown at the end")),
                      ("download", "Playwright's own Chromium (a ~150 MB download, "
                                   "when you run the command shown)")],
                     default="installed" if br else "download",
-                    why=("nothing extra to download" if br else
+                    why=("no browser download — it uses the one you have" if br else
                          "no Chrome or Edge was found")))
     return asks
 
@@ -876,14 +884,20 @@ def _web_check(ctx) -> Proof:
         parts.append("search: " + (", ".join(own) if own else
                                    "open sources only" if W.consent() == "on" else
                                    "nothing connected"))
+    if not _have_playwright():
+        # optional: search and reading pages work without it
+        from .lifecycle import add_extra_command
+        parts.append("pages that need JavaScript: add Aura's browser part when you want it — "
+                     + add_extra_command("web"))
+        return Proof(ok, " · ".join(parts), "; ".join(missing), "\n".join(fix))
     b_ok, b_says = _browser_check()
     parts.append(b_says)
     if not b_ok:
         ok = False
         missing.append("a browser Aura can drive")
-        fix.append("pip install 'aura-agent[web]'"
-                   + ("" if installed_browsers() and _opt("browser.engine") == "installed"
-                      else "  then: playwright install chromium"))
+        fix.append("aura setup web" + ("" if installed_browsers() and
+                                         _opt("browser.engine") == "installed"
+                                         else "  (then: playwright install chromium)"))
     return Proof(ok, " · ".join(parts), "; ".join(missing), "\n".join(fix))
 
 

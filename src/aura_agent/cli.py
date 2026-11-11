@@ -534,7 +534,7 @@ def cmd_run(args) -> int:
             _ws, eng / "salvage" / "patch.diff")
         if ok:
             ui.info(f"salvage: diff flushed to {eng / 'salvage' / 'patch.diff'}")
-        elif not rec.gate_missing:
+        elif not rec.gate_missing and "not a git repository" not in (flush_err or ""):
             ui.warn(f"salvage: no diff recoverable ({flush_err or 'none'})")
     except Exception:
         pass  # Salvage must never mask the real exit path

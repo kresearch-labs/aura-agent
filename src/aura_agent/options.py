@@ -182,8 +182,10 @@ def _web_needs() -> str:
 
 
 def _browser_needs() -> str:
-    return "Playwright installed" if _installed("playwright") else \
-        "browser part needs Playwright: pip install 'aura-agent[web]'"
+    if _installed("playwright"):
+        return "Playwright installed"
+    from .lifecycle import add_extra_command
+    return "browser part not added: " + add_extra_command("web")
 
 
 def _themes() -> list[str]:
