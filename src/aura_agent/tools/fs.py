@@ -314,7 +314,9 @@ def parse_problem(p: Path) -> str | None:
     if suffix not in (".py", ".pyi", ".json", ".toml") or not p.is_file():
         return None
     try:
-        text = p.read_text(encoding="utf-8")
+        # utf-8-sig: a file saved with a BOM (common on Windows) is valid —
+        # Python itself reads it that way
+        text = p.read_text(encoding="utf-8-sig")
         if suffix in (".py", ".pyi"):
             compile(text, str(p.name), "exec", dont_inherit=True)
         elif suffix == ".json":

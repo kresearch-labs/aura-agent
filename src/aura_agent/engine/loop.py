@@ -1757,6 +1757,17 @@ class AgentLoop:
             messages = self._before_call(session, messages, step, steer_queue)
             messages = self._context_for_call(session, messages, step, task)
             res, messages = self._call_model(session, messages, step)
+            if getattr(res, "finish_reason", None) == "cancelled" \
+                    and getattr(self, "urgent", False) and not kill_check():
+                # Ctrl+Enter: the user cut this reply short to say something now —
+                # the half reply is dropped and their message is read at once
+                self.urgent = False
+                _ev = getattr(self.llm, "cancel_event", None)
+                if _ev is not None:
+                    _ev.clear()
+                self.on_event("notice", {"text": "cut short — reading your message now",
+                                         "calm": True})
+                continue
             if not res.tool_calls:
                 rec, messages = self._finish_or_resume(
                     session, messages, res, step, task, kill_check)
@@ -2223,7 +2234,7 @@ class AgentLoop:
             if kind == "question":
                 self.on_event("notice", {"text": (
                     "a question — Aura answers it and changes nothing (say what to do "
-                    "if you want it done)")})
+                    "if you want it done)"), "calm": True})
         if not talk and (kind == "task" or self._reply):
             self._ledger_open(task, reply=bool(self._reply))   # Talk and questions open no task
         # model switch: the session's base prompt follows the ACTIVE model

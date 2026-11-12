@@ -45,7 +45,8 @@ RUNNING_OK = {"/status", "/context", "/todos", "/usage", "/help", "/keys",
 MODES = [("L2", "act"), ("L1", "act"), ("L2", "plan"), ("L3", "act")]
 
 SHORTCUTS = [
-    ("Enter", "send · while Aura works: send into the task"),
+    ("Enter", "send · while Aura works: it reads your message at its next step"),
+    ("Ctrl+Enter", "while Aura works: stop this step and read your message now"),
     ("Shift+Enter · Alt+Enter · Ctrl+J", "new line (or end a line with \\)"),
     ("Esc", "stop the task · close a menu"),
     ("Esc Esc", "empty box: edit an earlier message · text: clear it"),
@@ -663,6 +664,8 @@ class ChatApp:
             verbose = self.verbose or self.state.get("debug_raw", False)
             if self.focus and d.get("status") == "ok" and not verbose:
                 pass                 # Focus: no tool rows (the footer counts them)
+            elif d.get("tool") in ("tools_find",) and d.get("status") == "ok" and not verbose:
+                pass                 # Aura's own plumbing: not shown (Ctrl+O shows it)
             elif d.get("tool") in ("read_file", "list_files", "symbols") and \
                     d.get("status") == "ok" and not verbose:
                 if not hasattr(self, "read_batch"):
@@ -739,8 +742,9 @@ class ChatApp:
                 self.team_state = (d.get("kind"), bool(d.get("queued")))
         elif kind == "phase":
             name, det = str(d.get("name", "")), str(d.get("detail", ""))
-            if name in ("context overflow", "proof", "silent-skip guard",
-                        "reasoning-landing", "compaction", "sources"):
+            if name in ("context overflow", "proof", "compaction", "sources") or (
+                    name in ("silent-skip guard", "reasoning-landing")
+                    and (self.verbose or self.state.get("debug_raw"))):    # internal: Ctrl+O
                 self.say(cells.notice_cell(f"{name}: {det}" if det else name,
                                            s, w, "info"))
             elif name == "context trim" and (self.verbose or self.state.get("debug_raw")):
@@ -1790,6 +1794,18 @@ class ChatApp:
             text = ed.submit()
             self.popup = []
             self.submit(text)
+            return
+        if kid == "ctrl+enter" and self.running and ed.text.strip():
+            # while Aura works: stop this step and read the message now (Enter
+            # waits for the next step)
+            self._prepare_send(ed)
+            text = ed.submit()
+            self.popup = []
+            self.submit(text)
+            if text.strip() in self.state.get("steer_queue", []):
+                self.loop.urgent = True
+                self.cancel.set()              # Cuts the reply in progress
+                self.flash("sent — Aura stops this step and reads it now")
             return
         if kid in ("shift+enter", "alt+enter", "ctrl+j", "ctrl+enter"):
             ed.insert("\n")
