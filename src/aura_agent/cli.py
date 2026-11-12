@@ -741,6 +741,16 @@ def cmd_setup(args) -> int:
     words = list(getattr(args, "mode", None) or [])
     if not words and _os.environ.get("AURA_SETUP_LANE"):
         words = [_os.environ["AURA_SETUP_LANE"].strip().lower()]
+    if not words and _sys_tty():                       # Ask which setup, like Hermes
+        print("Which setup?")
+        print("  1. quick — the model and how much Aura asks (about a minute)")
+        print("  2. full  — every part, one step at a time (model, safety, tools, web, "
+              "connections, messages, you)")
+        try:
+            pick = input("choose 1-2 [1]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            pick = ""
+        words = ["full"] if pick in ("2", "full", "f") else ["quick"]
     mode = words[0] if words else "quick"
     if mode == "status":
         print("setup — what each step showed when it was checked:")
@@ -807,8 +817,8 @@ def _offer_eval(rc: int, ask_prompt: bool = False) -> None:
                       + " (change: aura model settings maker|aura)")
     except (Exception, KeyboardInterrupt):           # noqa: BLE001
         pass                    # An offer must never break setup
-    # 2): learn what the model can do (asks first; once per model). The old
-    # coding test stays optional: aura eval run
+    # 2) the quick check: one call (tools) and what the server reports. The
+    # deeper fine-tuning stays optional: aura eval model --deep
     try:
         from . import model_facts as MF
         MF.offer(LLMClient(prof), MF.model_key(prof.base_url, prof.model))
@@ -1833,7 +1843,7 @@ def _eval_model(args) -> int:
     if bad:
         print(f"--only takes caps, edit, ask (not {', '.join(bad)})")
         return 1
-    which = tuple(only) or MF.ALL
+    which = tuple(only) or (MF.QUICK + (MF.DEEP if getattr(args, "deep", False) else ()))
     if not getattr(args, "again", False):
         # measure only what this model hasn't been measured for yet
         have = MF.load().get(key) or {}
@@ -2876,7 +2886,8 @@ def build_parser() -> argparse.ArgumentParser:
     evm.add_argument("--again", action="store_true", help="measure again")
     evm.add_argument("--yes", action="store_true", help="don't ask before spending tokens")
     evm.add_argument("--only", default="", help="caps, edit, ask (comma-separated)")
-    evm.add_argument("--full", action="store_true", help="also find the longest reply (one long call)")
+    evm.add_argument("--deep", action="store_true",
+                     help="also fine-tune for this model: edit form and ask-first habit (about 30 calls)")
     evm.add_argument("--profile", default=argparse.SUPPRESS)
     evc = ev_sub.add_parser("compare", help="what changed between two runs")
     evc.add_argument("a")

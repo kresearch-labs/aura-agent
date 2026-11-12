@@ -112,15 +112,52 @@ def running_window(base_url: str, model: str) -> int | None:
     return None
 
 
-def _probe_openai_models(base_url: str, model: str) -> int | None:
-    """vLLM-style /v1/models entries may carry max_model_len."""
-    data = _get_json(base_url.rstrip("/") + "/models")
+# the names OpenAI-compatible servers use for the context size, best first
+CTX_FIELDS = ("max_model_len", "context_length", "context_window", "max_context_length",
+              "max_input_tokens", "max_seq_len", "n_ctx")
+
+
+def ctx_from(entry) -> int | None:
+    """The context size in a model entry the server returned (any of the usual
+    field names, also inside meta / metadata), or None."""
+    if not isinstance(entry, dict):
+        return None
+    for where in (entry, entry.get("meta"), entry.get("metadata")):
+        if isinstance(where, dict):
+            for f in CTX_FIELDS:
+                try:
+                    v = int(where.get(f) or 0)
+                except (TypeError, ValueError):
+                    v = 0
+                if v > 256:
+                    return v
+    return None
+
+
+def _model_entry(data, model: str):
+    """This model's entry in a /models list: the exact id, the same name without a
+    publisher prefix (org/name), or the only model the server has."""
     if not isinstance(data, dict):
         return None
-    for entry in data.get("data") or []:
-        if entry.get("id") == model and entry.get("max_model_len"):
-            return int(entry["max_model_len"])
-    return None
+    entries = [e for e in data.get("data") or [] if isinstance(e, dict)]
+    for e in entries:
+        if e.get("id") == model:
+            return e
+    short = str(model).split("/")[-1].lower()
+    for e in entries:
+        if str(e.get("id", "")).split("/")[-1].lower() == short:
+            return e
+    return entries[0] if len(entries) == 1 else None
+
+
+def _probe_openai_models(base_url: str, model: str) -> int | None:
+    """What an OpenAI-compatible server says in /models (or /models/<id>)."""
+    import urllib.parse
+    root = base_url.rstrip("/")
+    found = ctx_from(_model_entry(_get_json(root + "/models"), model))
+    if not found:
+        found = ctx_from(_get_json(root + "/models/" + urllib.parse.quote(str(model), safe="")))
+    return found
 
 
 def _probe_lmstudio(base_url: str, model: str) -> int | None:
@@ -192,6 +229,16 @@ def probe_context_length(base_url: str, model: str,
     cached = _cache_get(key)
     if cached:
         return cached
+    # what the model check already read from this server
+    try:
+        from .model_facts import load, model_key
+        caps = (load().get(model_key(base_url, model)) or {}).get("caps") or {}
+        known = ctx_from((caps.get("server_info") or {}).get("value"))
+        if known:
+            _cache_put(key, known)
+            return known, "probed:server-info"
+    except Exception:                                # noqa: BLE001
+        pass
     # probes, best-first
     for kind, fn in (("ollama", _probe_ollama_post),
                      ("models-endpoint", _probe_openai_models),
@@ -212,6 +259,11 @@ def server_reports(base_url: str, model: str) -> int | None:
     """Only what the server itself says (no default): for setup's question."""
     ctx, src = probe_context_length(base_url, model)
     return ctx if src != "default" else None
+
+
+def remember_reported(base_url: str, model: str, ctx: int) -> None:
+    """A size the server reported (kept until the user changes it)."""
+    _cache_put(f"{base_url}|{model}", int(ctx))
 
 
 def remember_measured(base_url: str, model: str, ctx: int) -> None:

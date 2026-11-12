@@ -281,16 +281,14 @@ def _server_info(base_url: str, model: str, api_key: str | None) -> dict:
     """What an OpenAI-style server says about the model in /v1/models —
     the fields any server may add (no server-specific calls)."""
     try:
-        from .ctx_probe import _get_json
-        d = _get_json(base_url.rstrip("/") + "/models", api_key) or {}
+        from .ctx_probe import CTX_FIELDS, _get_json, _model_entry
+        e = _model_entry(_get_json(base_url.rstrip("/") + "/models", api_key) or {}, model)
     except Exception:                                # noqa: BLE001
         return {}
-    for e in d.get("data") or []:
-        if isinstance(e, dict) and e.get("id") == model:
-            keep = ("owned_by", "max_model_len", "context_length", "context_window",
-                    "max_context_length", "capabilities", "max_output_tokens", "created")
-            return {k: e[k] for k in keep if k in e}
-    return {}
+    if not e:
+        return {}
+    keep = CTX_FIELDS + ("owned_by", "capabilities", "max_output_tokens", "created", "meta")
+    return {k: e[k] for k in keep if k in e}
 
 
 def _probe_tool_choice(ask) -> str:
@@ -337,128 +335,47 @@ def tool_skill(key: str | None = None) -> str | None:
 
 
 def probe_capabilities(llm, log=print, full: bool = False) -> dict:
-    """What this endpoint + model can do — a few tiny calls. Every value says how
-    it was learned: measured, server, or unknown (never a guess).
+    """What Aura needs to know about this endpoint + model — and uses:
+      tools        one tiny call: can it call tools (Aura can't work without them)
+      server_info  no model call: what the server reports (its context size first)
+    Images and JSON are checked the first time they are needed; how well the
+    model picks tools is learned from real use. Every value says how it was
+    learned: measured, server, or unknown (never a guess).
     """
     from .llm import ProviderRejected
     global PROBING
     caps: dict = {}
-    times: list[tuple[int, float, int]] = []          # First-token ms, seconds, tokens
-    thinks = []
 
     def put(name, value, how="measured", note=""):
         caps[name] = {"value": value, "how": how, **({"note": note} if note else {})}
         log(f"  {name:14s} {value}{'  (' + note + ')' if note else ''}")
 
-    def ask(msgs, **kw):
-        res = llm.chat(msgs, temperature=0, **kw)
-        times.append((res.first_token_ms or 0, res.duration_s or 0.0,
-                      (res.usage or {}).get("completion_tokens") or 0))
-        thinks.append(bool(res.reasoning))
-        return res
-
     PROBING = True
     try:
-        # tools, and several in one reply
         try:
-            r = ask([{"role": "user", "content": "Call the ping tool with n=1."}], tools=[_PING])
+            r = llm.chat([{"role": "user", "content": "Call the ping tool with n=1."}],
+                         temperature=0, tools=[_PING])
             put("tools", "yes" if any(t.get("name") == "ping" for t in r.tool_calls or []) else "no")
-            usage = r.usage or {}
-            put("usage", "yes" if usage.get("prompt_tokens") else "no")
-            put("cached_report", "yes" if _cached_tokens(usage) is not None else "no",
-                note="the server says how many prompt tokens came from its cache")
         except ProviderRejected as e:
             put("tools", "no", note=str(e)[:80])
         except Exception as e:                       # noqa: BLE001
             put("tools", "unknown", "unknown", str(e)[:80])
-        if caps.get("tools", {}).get("value") == "yes":
-            try:
-                r = ask([{"role": "user", "content": "Call the ping tool twice in this one "
-                          "reply: once with n=1 and once with n=2."}], tools=[_PING])
-                put("parallel_tools", "yes" if len(r.tool_calls or []) >= 2 else "no")
-            except Exception as e:                   # noqa: BLE001
-                put("parallel_tools", "unknown", "unknown", str(e)[:80])
-            try:
-                put("tool_choice", _probe_tool_choice(ask),
-                    note="right tool + arguments out of the full list, 2 tries")
-            except Exception as e:                   # noqa: BLE001
-                put("tool_choice", "unknown", "unknown", str(e)[:80])
-        # the system role
-        try:
-            ask([{"role": "system", "content": "Answer in one word."},
-                 {"role": "user", "content": "Say ok."}])
-            put("system_role", "yes")
-        except ProviderRejected as e:
-            put("system_role", "no", note=str(e)[:80])
-        except Exception as e:                       # noqa: BLE001
-            put("system_role", "unknown", "unknown", str(e)[:80])
-        # images
-        try:
-            r = ask([{"role": "user", "content": [
-                {"type": "text", "text": "What colour is this image? Answer with one word."},
-                {"type": "image_url", "image_url": {"url": _red_png()}}]}])
-            put("vision", "yes" if "red" in (r.content or "").lower() else "no",
-                note="" if "red" in (r.content or "").lower() else f"said: {(r.content or '')[:40]}")
-        except ProviderRejected as e:
-            put("vision", "no", note=str(e)[:80])
-        except Exception as e:                       # noqa: BLE001
-            put("vision", "unknown", "unknown", str(e)[:80])
-        # JSON output
-        try:
-            r = ask([{"role": "user", "content": 'Reply with the JSON object {"a": 1} and nothing else.'}],
-                    extra={"response_format": {"type": "json_object"}})
-            try:
-                ok = isinstance(json.loads((r.content or "").strip().strip("`").removeprefix("json")), dict)
-            except ValueError:
-                ok = False
-            put("json", "yes" if ok else "no")
-        except ProviderRejected as e:
-            put("json", "no", note=str(e)[:80])
-        except Exception as e:                       # noqa: BLE001
-            put("json", "unknown", "unknown", str(e)[:80])
-        # caching: the same long start twice
-        if caps.get("cached_report", {}).get("value") == "yes":
-            try:
-                big = "Reference text. " + " ".join(f"item-{i}" for i in range(1500))
-                msgs = [{"role": "system", "content": big}, {"role": "user", "content": "Say ok."}]
-                ask(msgs)
-                r = ask(msgs)
-                put("caching", "yes" if (_cached_tokens(r.usage) or 0) > 0 else "no")
-            except Exception as e:                   # noqa: BLE001
-                put("caching", "unknown", "unknown", str(e)[:80])
-        else:
-            put("caching", "unknown", "unknown", "the server doesn't report cached tokens")
-        # speed
-        try:
-            r = ask([{"role": "user", "content": "Write the numbers 1 to 60, separated by spaces."}])
-            toks = (r.usage or {}).get("completion_tokens") or 0
-            gen = max(0.001, (r.duration_s or 0) - (r.first_token_ms or 0) / 1000)
-            ftt = sorted(t[0] for t in times if t[0])
-            put("first_token_ms", ftt[len(ftt) // 2] if ftt else None,
-                note="middle of the calls above")
-            put("tokens_per_s", round(toks / gen, 1) if toks else None)
-        except Exception as e:                       # noqa: BLE001
-            put("tokens_per_s", "unknown", "unknown", str(e)[:80])
-        put("thinking", "yes" if any(thinks) else "no",
-            note="thinking text seen in replies" if any(thinks) else "")
-        if full:
-            try:
-                r = ask([{"role": "user", "content": "Write the word go, 20000 times, separated by spaces."}])
-                n = (r.usage or {}).get("completion_tokens") or 0
-                put("max_reply", n if r.finish_reason == "length" else f">={n}",
-                    note=f"stopped: {r.finish_reason}")
-            except Exception as e:                   # noqa: BLE001
-                put("max_reply", "unknown", "unknown", str(e)[:80])
     finally:
         PROBING = False
     info = _server_info(llm.p.base_url, llm.p.model, getattr(llm.p, "api_key", None))
     if info:
         caps["server_info"] = {"value": info, "how": "server"}
-        log(f"  server says    {info}")
+        from .ctx_probe import ctx_from, remember_reported
+        ctx = ctx_from(info)
+        if ctx:
+            remember_reported(llm.p.base_url, llm.p.model, ctx)
+            log(f"  context size   {ctx:,} tokens (the server says)")
     return caps
 
 
 ALL = ("caps", "edit_form", "early_check")
+QUICK = ("caps",)                 # what setup runs: one call
+DEEP = ("edit_form", "early_check")   # optional fine-tuning: aura eval model --deep
 
 
 def hint(base_url: str, model: str) -> str | None:
@@ -470,26 +387,16 @@ def hint(base_url: str, model: str) -> str | None:
 
 
 def offer(llm, key: str, ask=input, say=print) -> dict | None:
-    """After a model is picked: ONE offer to learn it (it spends tokens, so
-    it always asks; a "no" is remembered). `aura eval model` any time."""
+    """After a model is picked: the quick check — one call (can it call tools) and
+    what the server says about the model, its context size first. Nothing to
+    decide, so nothing is asked. The deeper fine-tuning stays optional."""
     rec = load().get(key) or {}
-    if rec.get("caps") or rec.get("declined"):
+    if rec.get("caps"):
         return None
-    say(f"\n{key.split('|', 1)[-1]} hasn't been checked yet. Aura can find out what it can "
-        "do (tools, images, JSON, speed, …) and which edit form and ask-first habit "
-        "suit it — so it never has to guess.")
-    say("  " + cost_note())
-    try:
-        yes = str(ask("  check it now? [y/N] ")).strip().lower() in ("y", "yes")
-    except (EOFError, KeyboardInterrupt):
-        yes = False
-    if not yes:
-        save_facts(key, {"declined": round(time.time())})
-        say("  ok — not asking again for this model (later: aura eval model).")
-        return None
-    out = measure(llm, key, log=lambda s: say(s))
-    for ln in show(key):
-        say(ln)
+    say(f"\nchecking {key.split('|', 1)[-1]} (one short call):")
+    out = measure(llm, key, which=QUICK, log=lambda s: say(s))
+    say("  optional fine-tuning for this model (edit form, ask-first habit; about "
+        f"{sum(COSTS[w] for w in DEEP)} calls): aura eval model --deep")
     return out
 
 
@@ -509,14 +416,13 @@ def measure(llm, key: str, which: tuple = ALL, log=print,
     return out
 
 
-COSTS = {"caps": 10, "edit_form": 18, "early_check": 12}
+COSTS = {"caps": 1, "edit_form": 18, "early_check": 12}
 
 
 def cost_note(which: tuple = ALL, full: bool = False) -> str:
-    n = sum(COSTS[w] for w in which) + (1 if full and "caps" in which else 0)
-    extra = " plus one long reply (--full)" if full and "caps" in which else ""
-    return (f"about {n} short model calls{extra} — a few thousand tokens; a minute "
-            "or two on a local model")
+    n = sum(COSTS[w] for w in which)
+    return (f"{n} short model call{'' if n == 1 else 's'}"
+            + (" — a few thousand tokens; a minute or two on a local model" if n > 5 else ""))
 
 
 COST_NOTE = cost_note()

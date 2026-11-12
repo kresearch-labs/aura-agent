@@ -237,8 +237,48 @@ def _model_run(ctx) -> list:
     if prof is None:
         return []
     ctx["profile"], ctx["setup_name"] = prof, prof.name
-    ctx["ctx_len"] = _context_len(prof)
+    ctx["ctx_len"] = _context_len(prof) or _ask_context(prof)
     return [f"model: {prof.model} at {prof.base_url}"]
+
+
+def _ask_context(prof) -> int | None:
+    """The server didn't say the model's context size: ask once — type it, find
+    it by testing, or use 128k. The answer is kept for this model until changed
+    (/model ctx <n>), so a chat never guesses quietly."""
+    from .ctx_probe import DEFAULT_CTX, find_by_testing, remember_measured
+    from .profile_store import set_profile
+    from .setup import _ask, _choose
+    how = _choose(f"The server doesn't say how much text {prof.model} can take in at once "
+                  "(its context size). What should Aura do?",
+                  [("type it", "you enter the number, e.g. 262144"),
+                   ("find it by testing", "Aura sends bigger and bigger prompts until the "
+                                          "server refuses — a few minutes; on a paid API it "
+                                          "costs prompt tokens"),
+                   ("use 128k", f"{DEFAULT_CTX:,} tokens, kept as your choice")], default_idx=0)
+    n = None
+    if how == "type it":
+        raw = _ask("Context size (tokens)", str(DEFAULT_CTX)).strip()
+        try:
+            n = int(raw.replace(",", "").replace("_", "").replace(" ", ""))
+        except ValueError:
+            print(f"  (not a number — using {DEFAULT_CTX:,})")
+    elif how == "find it by testing":
+        from .machine import ok_to_run
+        if ok_to_run("finding the context size", prof.base_url):
+            found = find_by_testing(prof.base_url, prof.model, getattr(prof, "api_key", None))
+            if found:
+                remember_measured(prof.base_url, prof.model, found)
+                print(f"  context size: {found:,} tokens (found by testing)")
+                return found
+        print("  not found — you can set it any time: /model ctx <tokens>")
+    n = n or DEFAULT_CTX
+    try:
+        set_profile(prof.name, context_length=int(n))
+        prof.context_length = int(n)
+    except Exception:                                # noqa: BLE001
+        pass
+    print(f"  context size: {n:,} tokens (your choice — change it: /model ctx <tokens>)")
+    return n
 
 
 def _model_check(ctx) -> Proof:
@@ -278,7 +318,8 @@ def _asking_asks(ctx) -> list:
               default=str(_opt("assist.level")),
               why="L2 lets it work without stopping you for every edit, and still "
                   "asks before anything that can't be taken back")
-    start = Ask("assist.start", "How should a new chat start?",
+    start = Ask("assist.start", "The default for every new chat — act or plan? "
+                "(one chat: /mode act|plan)",
                 [("act", "Aura works on what you ask"),
                  ("plan", "it looks and plans first, and changes nothing until you "
                           "switch with /mode")],
@@ -1928,7 +1969,7 @@ def run(mode: str = "full", only: list | None = None, answers: dict | None = Non
     hidden: set = set()                  # Answers never printed or recorded
     for i, st in enumerate(steps, 1):
         say("")
-        say(f"[{i}/{len(steps)}] {st.title}")
+        say(f"[{i}/{len(steps)}] {st.title}   (change it any time: {st.later})")
         for f in st.look(ctx):
             say(f"  {'✓' if f.state == 'ok' else '!' if f.state == 'warn' else '·'} {f.text}")
         if st.run is not None:

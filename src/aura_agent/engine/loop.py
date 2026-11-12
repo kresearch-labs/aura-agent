@@ -1928,6 +1928,11 @@ class AgentLoop:
         self._run_t0 = time.time()   # Plan items made in this run (skip guard)
         # the plan of THIS chat (the switch decides whether there is one)
         self.m.plan_chat = Path(getattr(session, "path", "") or "chat").stem
+        if getattr(self, "ctx_source", "") == "default" and not getattr(self, "_ctx_told", False):
+            self._ctx_told = True
+            self.on_event("notice", {"text": f"{getattr(getattr(self.llm, 'p', None), 'model', None) or 'this model'}'s "
+                          "context size isn't known — using 128k. Set it: /model ctx <tokens> · "
+                          "find it: /model ctx find"})
         self.m.plan_forced = False
         try:
             from ..todo import archive_done
