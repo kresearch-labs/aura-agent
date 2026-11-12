@@ -181,3 +181,7 @@ The paper: *Persona: A Growable Personality Layer That Turns Any Agent Into a Co
 ## 📄 License
 
 Apache 2.0 — see [LICENSE](LICENSE).
+
+---
+
+<div align="center"><sub>Built by <b>King</b> — one person, one consumer PC.</sub></div>
