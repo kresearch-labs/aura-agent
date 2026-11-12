@@ -5,7 +5,7 @@ dynamic = ["version"]
 description = "Aura — local-first autonomous AI agent that proves its work — any OpenAI-compatible endpoint, zero extra infrastructure"
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11"
 keywords = [
     "ai-agent", "autonomous-agent", "local-first", "llm-agent",
@@ -71,7 +71,7 @@ path = "src/aura_agent/__init__.py"
 # the source archive carries only what a release needs
 [tool.hatch.build.targets.sdist]
 include = ["src/aura_agent", "scripts/install.sh", "scripts/install.ps1",
-           "README.md", "LICENSE", "pyproject.toml"]
+           "README.md", "LICENSE", "NOTICE", "pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aura_agent"]

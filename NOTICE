@@ -1,0 +1,12 @@
+Aura
+Copyright 2026 King (kresearch-labs)
+
+Aura and Persona were created by King.
+https://github.com/kresearch-labs/aura-agent
+
+Persona (the experience layer inside Aura) is described in:
+King. Persona: A Growable Personality Layer That Turns Any Agent Into a
+Companion That Learns You. Zenodo, 2026. https://doi.org/10.5281/zenodo.24145734
+
+This product includes all-MiniLM-L6-v2 (sentence-transformers), int8 ONNX,
+licensed under the Apache License, Version 2.0.
