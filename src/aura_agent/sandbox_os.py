@@ -257,6 +257,15 @@ def _stop_group(p) -> None:
         pass
 
 
+class Stopped(subprocess.TimeoutExpired):
+    """The user stopped the task while this command ran (Ctrl+C / Esc / /kill)."""
+
+
+# set by the chat screen when the user stops the task; a running command ends at once
+import threading as _threading
+STOP = _threading.Event()
+
+
 def run_tree(cmd, *, shell: bool, timeout: float, cwd: str | None, env: dict,
              preexec_fn=None, on_timeout=None, keep: int = KEEP_BYTES):
     """Run one command the way every engine does: its output goes to files
@@ -275,7 +284,17 @@ def run_tree(cmd, *, shell: bool, timeout: float, cwd: str | None, env: dict,
             p = subprocess.Popen(cmd, start_new_session=True, preexec_fn=preexec_fn, **kw)
             job = None
         try:
-            p.wait(timeout=timeout)
+            import time as _time
+            end = _time.monotonic() + timeout
+            while True:
+                try:
+                    p.wait(timeout=max(0.01, min(0.25, end - _time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    if STOP.is_set():
+                        raise Stopped(cmd, timeout) from None
+                    if _time.monotonic() >= end:
+                        raise
         except subprocess.TimeoutExpired:
             if os.name == "nt":
                 _close_job(job)

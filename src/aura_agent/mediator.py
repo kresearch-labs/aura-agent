@@ -545,9 +545,12 @@ class Mediator:
             return False
         from .approvals import _digest_args, ask_operator
         key = (name, _digest_args(args or {}))
-        if key in self._declined:
-            raise Violation(f"the operator already said no to '{path}' this session — "
-                            "do not ask again; continue another way")
+        fkey = ("outside", str(folder).lower())      # A "no" covers the folder, any call
+        if key in self._declined or fkey in self._declined:
+            self._audit(name, args, "REFUSED_OPERATOR", None)
+            raise Violation(f"the user already said no to using {folder} in this chat — "
+                            "don't ask again. Tell the user you didn't use it, or continue "
+                            "another way inside the project")
         from .outside import addable, save
         # a whole drive or the home folder is too wide to allow: yes allows
         # exactly this file (or this listing) for the chat
@@ -577,6 +580,11 @@ class Mediator:
             return True
         if "declined" in note:
             self._declined.add(key)
+            self._declined.add(fkey)
+            self._audit(name, args, "REFUSED_OPERATOR", None)
+            raise Violation(f"the user said no to using {folder} — '{path}' was not used. "
+                            "Don't ask again in this chat; tell the user, or continue "
+                            "another way inside the project")
         self._audit(name, args, "REFUSED_OPERATOR", None)
         raise Violation(f"{note} — '{path}' was not used. Do not retry it; "
                         "continue another way or ask the user")

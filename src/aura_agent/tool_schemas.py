@@ -215,7 +215,8 @@ SCHEMAS: dict[str, dict] = {'delegate': {'type': 'function',
                                          'required': []}}},
  'todo_write': {'type': 'function',
                 'function': {'name': 'todo_write',
-                             'description': 'Maintain the visible plan for a '
+                             'description': 'Only while the user has the plan switch on (/plan on): '
+                                            'maintain the visible plan for a '
                                             'multi-step task. action=add (text) '
                                             'creates a pending item; action=status '
                                             '(id, status) moves it to in_progress or '
@@ -560,7 +561,8 @@ SCHEMAS["process"] = {"type": "function", "function": {
 # Aura's own options — look, and change when the user asks
 SCHEMAS["settings"] = {"type": "function", "function": {
     "name": "settings",
-    "description": ("Aura's own options: no arguments = all; key = one option "
+    "description": ("Aura's own options — including the context size Aura uses for the "
+                    "model in use (key context): no arguments = all; key = one option "
                     "explained; find = options matching a description."),
     "parameters": {"type": "object", "properties": {
         "key": {"type": "string"}, "find": {"type": "string"}}}}}
@@ -568,7 +570,8 @@ SCHEMAS["settings_set"] = {"type": "function", "function": {
     "name": "settings_set",
     "description": ("Change one of Aura's options or switches when the USER asks for it "
                     "in their words (e.g. 'turn on deep research', 'think harder', "
-                    "'let it read my Downloads', 'talk only for now', 'turn proof on'). "
+                    "'let it read my Downloads', 'talk only for now', 'turn proof on', "
+                    "'set your context to 1M' -> key=context value=1M). "
                     "`settings` finds the key. The user confirms every change; "
                     "action=reset restores the default."),
     "parameters": {"type": "object", "properties": {

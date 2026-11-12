@@ -700,13 +700,59 @@ SWITCHES = {
     "reviewer": ("feature", "reviewer", "a second opinion after repeated failures"),
     "syntax_check": ("feature", "syntax_note", "warn when a write breaks a file's syntax"),
     "discuss": ("mode", "discuss", "talk only — no changes (on) / back to work (off)"),
+    "context": ("context", "", "the context size Aura uses for the model in use — Aura's own "
+                               "setting for this model, never a file (value: tokens, e.g. 1M, 256k "
+                               "or 262144)"),
     "allow_folder": ("folder", "", "let Aura read and use a folder outside the project — "
                                    "Downloads, Desktop, Documents, any path (value: the folder)"),
 }
 
 
+def tokens_in(value) -> int | None:
+    """'1M', '1m', '256k', '1,048,576', '262144 tokens' -> tokens; None if not a size."""
+    import re
+    m = re.match(r"^\s*([\d.,_ ]+)\s*([kKmM]?)", str(value or ""))
+    if not m:
+        return None
+    try:
+        n = float(m.group(1).replace(",", "").replace("_", "").replace(" ", ""))
+    except ValueError:
+        return None
+    unit = m.group(2).lower()
+    n = n * (1_048_576 if unit == "m" else 1024 if unit == "k" else 1)
+    return int(n) if n >= 1024 else None
+
+
+def _context_now(mediator) -> tuple[object, object, int | None]:
+    loop = getattr(mediator, "_loop", None)
+    p = getattr(getattr(mediator, "_main_llm", None), "p", None)
+    gov = getattr(loop, "governor", None)
+    return loop, p, getattr(gov, "ctx", None)
+
+
 def _switch_set(mediator, key: str, value) -> str:
     kind, name, _ = SWITCHES[key]
+    if kind == "context":
+        n = tokens_in(value)
+        if not n:
+            return "not changed: give the size in tokens, e.g. 1M, 256k or 262144"
+        loop, p, old = _context_now(mediator)
+        if p is None:
+            return "not changed: no model in use"
+        p.context_length = n
+        gov = getattr(loop, "governor", None)
+        if gov is not None:
+            gov.ctx = n
+        if loop is not None:
+            loop.ctx_source = "override"
+        try:
+            from .profile_store import set_profile
+            set_profile(getattr(p, "name", "active"), activate=False, context_length=n)
+        except Exception:                            # noqa: BLE001
+            pass
+        return (f"context size for {getattr(p, 'model', 'the model')}: "
+                f"{f'{old:,}' if old else '?'} -> {n:,} tokens — Aura's own setting for this "
+                "model, saved (/model ctx changes it again)")
     on = str(value).strip().lower() in ("on", "true", "yes", "1", "")
     if kind == "feature":
         from . import features
@@ -768,13 +814,16 @@ def register(mediator, dispatch: dict) -> None:
                 return explain(str(args["key"]))
             except KeyError as e:
                 return str(e)
-        switches = [f"{k}: {why}" for k, (_, _, why) in SWITCHES.items()
-                    if not what or what.lower() in (k + " " + why).lower()]
+        # a switch matches on any real word of the search ("context limit" finds
+        # the context size), so a request never misses it on the wording
+        words = [w for w in what.lower().replace("_", " ").split() if len(w) > 3]
+        switches = [f"{k}: {why} (settings_set key={k})" for k, (_, _, why) in SWITCHES.items()
+                    if not what or any(w in (k + " " + why).lower() for w in words)]
         if what:
             hits = find(what)
             if not hits and not switches:
                 return f"no option matches {what!r}"
-            return "\n".join([explain(o.key) for o in hits] + switches)
+            return "\n".join(switches + [explain(o.key) for o in hits])
         return "\n".join(listing() + ["switches (settings_set key, value on/off):"] + switches)
 
     def settings_set(args) -> str:
@@ -799,6 +848,13 @@ def register(mediator, dispatch: dict) -> None:
 
     def describe_set(args) -> str:
         key = str(args.get("key") or "")
+        if key == "context":
+            _loop, p, old = _context_now(mediator)
+            n = tokens_in(args.get("value"))
+            return (f"Aura's context size for {getattr(p, 'model', 'the model in use')}: "
+                    f"{f'{old:,}' if old else '?'} -> {f'{n:,}' if n else args.get('value')} tokens "
+                    "(Aura's own setting — no files are changed)"
+                    + (f" · reason: {str(args.get('reason'))[:120]}" if args.get("reason") else ""))
         if key in SWITCHES:
             why = SWITCHES[key][2]
             return (f"{key}: {args.get('value', 'on')} — {why}"

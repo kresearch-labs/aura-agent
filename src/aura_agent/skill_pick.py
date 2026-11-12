@@ -201,7 +201,7 @@ def offer_search(eng: Path, chat: str, task_key: str, text: str, ask, tell,
     """Once per big task: search the public skill sources for a better
     fit — only on a yes; what is added stays untrusted until reviewed."""
     st = chat_state(eng, chat)
-    if ask is None or task_key in st["searched"]:
+    if ask is None or st["searched"]:          # Once per chat, not per message
         return None
     st["searched"].append(task_key)
     save_chat_state(eng, chat, st)

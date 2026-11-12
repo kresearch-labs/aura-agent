@@ -101,6 +101,9 @@ def _task_deliverable_names(task):
     return out
 
 
+QUESTION_ROUNDS = 4     # a question: at most this many rounds of looking, then the answer
+
+
 def _silent_skip_check(root, since: float = 0.0, chat: str = "",
                        force: bool = False) -> list[str]:
     """Silent-skip guard (LOCAL, zero tokens).
@@ -1293,6 +1296,16 @@ class AgentLoop:
             # Discuss: only the tools that read are offered — the model can't
             # reach for an edit it would only be refused
             _tools = self.schemas
+            # a question gets a short look, then an answer: after a few rounds of
+            # reading the tools go, and the model answers from what it has
+            if getattr(self.m, "turn_readonly", False) and                     getattr(self.m, "mode", "act") != "discuss":
+                self._q_rounds = getattr(self, "_q_rounds", 0) + 1
+                if self._q_rounds > QUESTION_ROUNDS:
+                    _tools = []
+                    _send = list(_send) + [{"role": "system", "content": (
+                        "[ANSWER NOW] The user asked a question. Answer it now, in words, "
+                        "from what you already have — no more tools. If you don't know, "
+                        "say so and say what you'd check.")}]
             if self._talk_only() and _tools:
                 from ..mediator import BlastRadius as _BR
                 _tools = [t for t in _tools
@@ -1637,7 +1650,8 @@ class AgentLoop:
         to the person once per task (3 offers a chat at most); the picked
         ones are sent in full. Once per big task: search the public sources?
         Never for a helper's run. Never stops the work."""
-        if getattr(self, "_skills_offered", True) or getattr(self, "parent_run", ""):
+        if getattr(self, "_skills_offered", True) or getattr(self, "parent_run", "") \
+                or getattr(self.m, "turn_readonly", False):        # a question: no offers
             return messages
         try:
             from .. import skill_pick as SP
@@ -1928,6 +1942,13 @@ class AgentLoop:
         self._run_t0 = time.time()   # Plan items made in this run (skip guard)
         # the plan of THIS chat (the switch decides whether there is one)
         self.m.plan_chat = Path(getattr(session, "path", "") or "chat").stem
+        try:
+            from ..session_titles import session_title
+            _t = session_title(Path(session.path).name) or ""
+        except Exception:                                # noqa: BLE001
+            _t = ""
+        _id = getattr(session, "id", "") or ""
+        self._chat_label = (f"#{_id}" if _id else self.m.plan_chat) + (f" '{_t}'" if _t else "")
         if getattr(self, "ctx_source", "") == "default" and not getattr(self, "_ctx_told", False):
             self._ctx_told = True
             self.on_event("notice", {"text": f"{getattr(getattr(self.llm, 'p', None), 'model', None) or 'this model'}'s "
@@ -1976,6 +1997,7 @@ class AgentLoop:
         self.m._history_session = session   # History leaves this chat out
         # Helpers (delegate) and the reviewer use the model in use now
         self.m._main_llm = self.llm
+        self.m._loop = self
         if getattr(self, "reviewer", None) is not None and self.llm is not None:
             self.reviewer.llm = self.llm
             self.reviewer.side_chat = lambda ins, txt, **kw: self._side_chat(
@@ -2089,7 +2111,9 @@ class AgentLoop:
         """."""
         try:
             from ..project_checks import environment_line
-            return "\n" + environment_line(Path(self.work_dir))
+            chat = getattr(self, "_chat_label", "")
+            return "\n" + environment_line(Path(self.work_dir)) + (
+                f" · this chat: {chat}" if chat else "")
         except Exception:                            # noqa: BLE001
             return ""
 
@@ -2105,6 +2129,7 @@ class AgentLoop:
         if talk and self._discuss_switch(task):
             talk = False                 # The user said: switch off and do it
         self.m.turn_readonly = False
+        self._q_rounds = 0
         kind = "task"
         if not messages:
             self._view = {}

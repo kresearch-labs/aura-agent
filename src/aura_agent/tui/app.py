@@ -38,7 +38,9 @@ from .text import cut, pad, width, wrap
 
 RUNNING_OK = {"/status", "/context", "/todos", "/usage", "/help", "/keys",
               "/kill", "/steer", "/theme", "/debug", "/tools", "/memory",
-              "/rules", "/scope", "/receipt", "/copy", "/agents", "/transcript", "/"}
+              "/rules", "/scope", "/receipt", "/copy", "/agents", "/transcript", "/",
+              # switches that take effect at once, on the running task too
+              "/assist", "/plan", "/proof"}
 
 MODES = [("L2", "act"), ("L1", "act"), ("L2", "plan"), ("L3", "act")]
 
@@ -512,6 +514,19 @@ class ChatApp:
             + (s("faint", f"  {self.branch}") if self.branch else "")
             + s("faint", f"   {self.workspace}"),
         ]
+        try:                                   # which chat this is: new or resumed
+            sess = self.ctx.session
+            cid = getattr(sess, "id", "") or ""
+            resumed = any(m.get("role") == "user" for m in sess.messages)
+            title = ""
+            if resumed:
+                from ..session_titles import session_title
+                title = session_title(sess.path.name) or ""
+            lines.append("  " + s("dim", "chat    ") + s("strong", f"#{cid}" if cid else "this chat")
+                         + s("faint", ("  resumed" + (f" · {title}" if title else ""))
+                             if resumed else "  new"))
+        except Exception:      # noqa: BLE001
+            pass
         if self.pon:
             for ln in self.pon.strip().splitlines()[:4]:
                 lines.append("  " + s("faint", cut(ln.strip(), w - 4)))
@@ -867,6 +882,11 @@ class ChatApp:
         self.running = True
         self.cancel.clear()
         self.state["killed"] = False
+        try:
+            from ..sandbox_os import STOP
+            STOP.clear()
+        except Exception:      # noqa: BLE001
+            pass
         try:                                   # What Aura held before (the check after the task)
             from ..machine import aura_bytes
             self._mem_before = aura_bytes()
@@ -964,6 +984,11 @@ class ChatApp:
         self.reasoning = ""
         self.cancel.clear()
         self.state["killed"] = False
+        try:
+            from ..sandbox_os import STOP
+            STOP.clear()
+        except Exception:      # noqa: BLE001
+            pass
         self._title(busy=False)
         if elapsed > 20:
             self._notify("Aura finished" if not problem else "Aura stopped: " + str(problem)[:60])
@@ -1043,6 +1068,11 @@ class ChatApp:
             return
         self.state["killed"] = True
         self.cancel.set()
+        try:
+            from ..sandbox_os import STOP
+            STOP.set()                         # A running command ends now
+        except Exception:      # noqa: BLE001
+            pass
         self.activity = "stopping"
         self.flash("stopping…")
 
@@ -1566,8 +1596,11 @@ class ChatApp:
                     ov["reason"] = Editor()
                 else:
                     self._answer_approval(choice)
-            elif k.id in ("escape", "ctrl+c"):
+            elif k.id == "escape":
                 self._answer_approval("deny")
+            elif k.id == "ctrl+c":             # Ctrl+C: no, and stop the task
+                self._answer_approval("deny")
+                self.interrupt()
             elif k.id == "char" and k.text in "123456789":
                 i = int(k.text) - 1
                 if i < len(opts):
@@ -1626,6 +1659,9 @@ class ChatApp:
                     ov["typing"] = Editor()
             elif k.id == "escape":
                 self._answer_clarify("")
+            elif k.id == "ctrl+c":             # Ctrl+C: no answer, and stop the task
+                self._answer_clarify("")
+                self.interrupt()
             elif k.id == "char" and k.text.isdigit() and 0 < int(k.text) <= n:
                 i = int(k.text) - 1
                 if i < len(opts):

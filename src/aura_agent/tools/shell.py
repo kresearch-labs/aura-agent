@@ -179,7 +179,11 @@ def register(mediator: Mediator, dispatch: dict,
                                "total_bytes": getattr(proc, "out_bytes", len(so) + len(se)),
                                "artifact_ref": ref, "duration_ms": 0},
                               ensure_ascii=False)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as _te:
+            from ..sandbox_os import Stopped
+            if isinstance(_te, Stopped):
+                raise Violation("run_command: stopped — the user stopped the task, the "
+                                "command and everything it started were ended") from None
             raise Violation(f"run_command: timeout after {timeout:.0f}s — the command and "
                             "everything it started were stopped; run a smaller part "
                             "(for tests: only the ones related to the change)")
