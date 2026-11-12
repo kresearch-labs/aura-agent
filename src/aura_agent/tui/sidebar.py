@@ -30,6 +30,7 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
                ("low", "a little thinking"), ("medium", "more thinking"),
                ("high", "the most thinking — slowest")],
     "/proof": [("on", "re-check and test before answering"), ("off", "answer right away")],
+    "/plan": [("on", "keep a step-by-step plan for this chat"), ("off", "no plan")],
     "/tui": [("fullscreen", "the whole window, sidebar"), ("inline", "your terminal's scrollback")],
     "/web": [("open on|off", "the no-account sources"), ("all on|off", "read any public page")],
     "/cron": [("add <when> <task>", "schedule a job"), ("pause|resume <id>", "stop / restart one"),
@@ -51,7 +52,7 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
 
 EXAMPLES: dict[str, str] = {
     "/research": "/research deep", "/assist": "/assist L1", "/mode": "/mode plan",
-    "/discuss": "/discuss on", "/team": "/team connect http://192.168.1.10:3456", "/think": "/think high", "/proof": "/proof on permanent", "/tui": "/tui inline",
+    "/discuss": "/discuss on", "/team": "/team connect http://192.168.1.10:3456", "/think": "/think high", "/proof": "/proof on permanent", "/plan": "/plan on", "/tui": "/tui inline",
     "/machine": "/machine on", "/web": "/web all on", "/cron": "/cron add every day at 09:00 summarize new issues",
     "/tools": "/tools on web", "/mcp": "/mcp add context7", "/add-dir": "/add-dir ~/Downloads",
     "/scope": "/scope add docs.python.org", "/rules": "/rules add never edit config/",
@@ -93,6 +94,9 @@ def _state(app, name: str) -> str | None:
         if name == "/proof":
             from .. import features
             return "on" if features.enabled("proof") else "off"
+        if name == "/plan":
+            from .. import features
+            return "on" if features.enabled("plan") else "off"
         if name == "/focus":
             return "on" if app.focus else "off"
         if name == "/tui":
@@ -369,7 +373,8 @@ def _switches(app) -> list[tuple[str, bool]]:
     """
     from .. import features
     out = [("discuss", getattr(app.m, "mode", "act") == "discuss"),
-           ("proof", features.enabled("proof"))]
+           ("proof", features.enabled("proof")),
+           ("plan", features.enabled("plan"))]
     try:
         from .. import websearch as W
         out.append(("web", W.consent() != "off"))

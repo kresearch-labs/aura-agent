@@ -2058,7 +2058,7 @@ class ChatApp:
         if now - self._todos_cache[0] > 1.5:
             try:
                 from ..todo import load_items
-                items = load_items(self.eng)
+                items = load_items(self.eng, self.ctx.session.path.stem)
             except Exception:      # noqa: BLE001
                 items = []
             self._todos_cache = (now, items)

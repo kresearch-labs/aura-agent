@@ -108,6 +108,7 @@ _ARGS = {
                ("low", "a little thinking"), ("medium", "more thinking"),
                ("high", "the most thinking — slowest")],
     "/proof": [("on", "re-check and test before answering"), ("off", "answer right away")],
+    "/plan": [("on", "keep a step-by-step plan for this chat"), ("off", "no plan")],
     "/tui": [("fullscreen", "the whole window, sidebar"), ("inline", "your terminal's scrollback")],
     "/web": [("open", "the no-account sources on/off"), ("all", "any public page on/off")],
     "/cron": [("add", "schedule a job"), ("pause", "stop one"), ("resume", "restart one"),

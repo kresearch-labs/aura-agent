@@ -101,7 +101,8 @@ def _task_deliverable_names(task):
     return out
 
 
-def _silent_skip_check(root, since: float = 0.0) -> list[str]:
+def _silent_skip_check(root, since: float = 0.0, chat: str = "",
+                       force: bool = False) -> list[str]:
     """Silent-skip guard (LOCAL, zero tokens).
 
     Reads todos.jsonl (the externalized plan the model itself wrote) and
@@ -109,7 +110,7 @@ def _silent_skip_check(root, since: float = 0.0) -> list[str]:
     steps closed (or no plan was made — single-step tasks unaffected).
     """
     try:
-        items = _load_todos(root)
+        items = _load_todos(root, chat, force)
     except Exception:
         return []
     # A one-step plan made for this task is the task itself; the final answer
@@ -117,7 +118,7 @@ def _silent_skip_check(root, since: float = 0.0) -> list[str]:
     # catch a claimed change that wasn't made)
     if since:
         from ..todo import made_at
-        made = made_at(root)
+        made = made_at(root, chat)
         new = [it for it in items if made.get(it.get("id"), 0) >= since]
         older_open = [it for it in items if it not in new
                       and it.get("status") in ("pending", "in_progress")]
@@ -432,8 +433,7 @@ interactive session. Rules:
 - If a fact you need isn't given and you can't find it, say it's missing
   instead of filling it in.
 - When the objective is achieved, reply with a concise final report.
-
-""" + TODO_INSTRUCTION)
+""")
 
 # 2.3 CANDIDATE generic prompt (AURA_PROMPT=generic) — not the default. Left
 # out on purpose: "skip plans for simple tasks" (planning_instruction already
@@ -470,8 +470,6 @@ When changing code:
 - Check your work with run_checks (the project's own test / lint /
   typecheck commands), the tests closest to your change first. Don't claim
   success until they pass — or say plainly why you couldn't run them.
-
-""" + TODO_INSTRUCTION + """
 
 Remember: keep going until it's done, verify before you claim it, keep
 answers short.""")
@@ -514,10 +512,9 @@ def planning_instruction(task: str, root=None) -> str:
     SUPPRESSES the plan ritual. Net negative: without it, todo_write creates
     items and the render block then injects EVERY turn.
     """
-    if classify_scope(task, root) == "multi":
-        return ""
-    return ("Focused single-target task: work directly; skip todo_write "
-            "unless this grows past ~3 steps.")
+    # the plan is the user's switch now: off = no plan talk at all; on = the
+    # per-step plan block says what to do
+    return ""
 
 
 class AgentLoop:
@@ -1105,6 +1102,14 @@ class AgentLoop:
         self.on_event("notice", {"text": f"discuss mode off — back to {self.m.mode}; doing it"})
         return True
 
+    def _plan_items(self) -> list[dict]:
+        """This chat's plan items — empty while the plan switch is off."""
+        try:
+            return _load_todos(self.root, getattr(self.m, "plan_chat", ""),
+                               getattr(self.m, "plan_forced", False))
+        except Exception:                                 # noqa: BLE001
+            return []
+
     def _answered_and_ticked(self, res) -> bool:
         """The reply is a real answer and its only calls tick plan steps done
         (todo_write status done / clear_done), and nothing made for this task
@@ -1125,10 +1130,10 @@ class AgentLoop:
                                             and str(a.get("status", "")).lower() == "done")):
                 return False
         try:
-            from ..todo import load_items, made_at
-            made = made_at(self.root)
+            from ..todo import made_at
+            made = made_at(self.root, getattr(self.m, "plan_chat", ""))
             t0 = getattr(self, "_run_t0", 0.0)
-            return not [i for i in load_items(self.root)
+            return not [i for i in self._plan_items()
                         if i.get("status") in ("pending", "in_progress")
                         and made.get(i.get("id"), 0) >= t0]
         except Exception:                                 # noqa: BLE001
@@ -1636,7 +1641,7 @@ class AgentLoop:
             return messages
         try:
             from .. import skill_pick as SP
-            todos = _load_todos(self.root)
+            todos = self._plan_items()
             goal = getattr(self, "_goal", "") or getattr(self, "_task_text", "")
             if not SP.is_big(goal, todos, classify_scope(goal) == "multi"):
                 return messages             # Small (so far): look again next step
@@ -1921,9 +1926,12 @@ class AgentLoop:
             log_swallowed("loop.pack_limits", _swallowed)
         self._skip_guard_used = 0    # Silent-skip guard reset per run
         self._run_t0 = time.time()   # Plan items made in this run (skip guard)
+        # the plan of THIS chat (the switch decides whether there is one)
+        self.m.plan_chat = Path(getattr(session, "path", "") or "chat").stem
+        self.m.plan_forced = False
         try:
             from ..todo import archive_done
-            archive_done(self.root)  # The last task's finished steps leave the plan
+            archive_done(self.root, self.m.plan_chat)  # The last task's finished steps leave the plan
         except Exception as _swallowed:
             log_swallowed("loop.todo_archive", _swallowed)
         self._run_failures = []      # 1.4: reviewer sees THIS run's failures
@@ -2426,11 +2434,12 @@ class AgentLoop:
                 if _mon.mode == "deep" and not self._deep_told:
                     from ..research import DEEP_INSTRUCTION
                     self._deep_told = True
+                    self.m.plan_forced = True    # deep research plans first, by design
                     session.note(DEEP_INSTRUCTION, step=step)
                     messages = messages + [{"role": "user", "content": aura_note(DEEP_INSTRUCTION)}]
                     self.on_event("notice", {"text": "deep research: plan first, two sources "
                                                      "per question, until the scope is exhausted"})
-                _rn = _mon.next_note(_load_todos(self.root))
+                _rn = _mon.next_note(self._plan_items())
                 if _rn:
                     self.on_event("phase", {"name": "research", "detail": _rn.splitlines()[0][:120]})
                     session.note(_rn, step=step)
@@ -2473,7 +2482,7 @@ class AgentLoop:
             changed = list(dict.fromkeys(
                 o.res[1] for o in WorkSet.scan(messages)
                 if o.name in ("write_file", "edit_file") and o.res[0] == "file"))
-            todos = [i for i in _load_todos(self.root)
+            todos = [i for i in self._plan_items()
                      if i.get("status") not in ("done", "archived")]
         except Exception as _swallowed:      # noqa: BLE001
             log_swallowed("loop.task_state", _swallowed)
@@ -2590,8 +2599,12 @@ class AgentLoop:
                         self.tool_list.add_set("code", "the symbol sheet is in the prompt")
             except Exception as _swallowed:
                 log_swallowed("loop.symbols_inject", _swallowed)  # Symbols must never kill the loop
-        # Todo state — the externalized plan visible every step
-        todo_items = _load_todos(self.root)
+        # Todo state — this chat's plan, visible every step while the switch is on
+        todo_items = self._plan_items()
+        from ..todo import plan_on as _plan_on
+        if _plan_on() and not todo_items and not getattr(self.m, "turn_readonly", False):
+            messages = messages + [{"role": "system", "content": "[PLAN SWITCH ON] "
+                                    + TODO_INSTRUCTION}]
         if todo_items:
             open_items = [i for i in todo_items if i["status"] != "archived"]
             if open_items:
@@ -2928,7 +2941,10 @@ class AgentLoop:
         # pending/in_progress at a clean exit is a narrated-but-unexecuted
         # step. Block completion once (budget below) with a mechanical nudge;
         # never invents content, only demands the artifact.
-        skipped = _silent_skip_check(self.root, getattr(self, "_run_t0", 0.0))
+        skipped = ([] if getattr(self.m, "turn_readonly", False) else   # a question: never
+                   _silent_skip_check(self.root, getattr(self, "_run_t0", 0.0),
+                                      getattr(self.m, "plan_chat", ""),
+                                      getattr(self.m, "plan_forced", False)))
         if skipped and self._skip_guard_used < _SKIP_GUARD_BUDGET:
             self._skip_guard_used += 1
             self.on_event("phase", {
@@ -3359,7 +3375,7 @@ class AgentLoop:
                     "over_budget": list(tl.over_budget)}
             _mon = getattr(self, "_research", None)
             if _mon is not None and (_mon.searches or _mon.mode == "deep"):
-                self._receipt.data["research"] = _mon.summary(_load_todos(self.root))
+                self._receipt.data["research"] = _mon.summary(self._plan_items())
             _reg = getattr(self.m, "_procs", None)
             if _reg is not None and _reg.procs:
                 self._receipt.data["processes"] = [

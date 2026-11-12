@@ -86,7 +86,7 @@ def _post_turn_ui(session, eng: Path, governor, loop, rec=None) -> None:
     except Exception:
         pass
     from .todo import load_items, render_checklist
-    items = load_items(eng)
+    items = load_items(eng, session.path.stem)
     if items:
         print(ui.muted(render_checklist(items)))
     # Skill suggestion after complex turns

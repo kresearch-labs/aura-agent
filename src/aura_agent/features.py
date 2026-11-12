@@ -29,10 +29,14 @@ FEATURES: dict[str, tuple[str, str]] = {
                              "and re-read it"),
     "reviewer": ("1.4", "after repeated failures, a fresh-context second "
                         "opinion on what is going wrong"),
+    "plan": ("plan", "keep a step-by-step plan for this chat — off unless you "
+                     "turn it on"),
 }
+# switched on only by the user (/plan on): no preset turns it on
+USER_ONLY = frozenset({"plan"})
 
 PRESETS: dict[str, frozenset[str]] = {
-    "recommended": frozenset(FEATURES),
+    "recommended": frozenset(FEATURES) - {"plan"},
     "minimal": frozenset({"syntax_note", "proof"}),
     "core": frozenset({"drift_check", "reviewer", "syntax_note"}),
     "off": frozenset(),

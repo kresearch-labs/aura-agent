@@ -933,6 +933,24 @@ def _proof(ctx, parts, line):
             "/proof on|off [permanent]")
 
 
+@command("/plan")
+def _plan(ctx, parts, line):
+    """The plan switch: a step-by-step plan for THIS chat, only when you want one."""
+    from . import features as F
+    arg = parts[1].lower() if len(parts) > 1 else ""
+    keep = "permanent" in [p.lower() for p in parts[2:]]
+    if arg in ("on", "off"):
+        ui.success("plan " + F.set_feature("plan", arg == "on", permanent=keep)
+                   .split(":", 1)[1].strip())
+        if keep:
+            ctx.defaults_take("features")
+        return Result()
+    on = F.enabled("plan")
+    ui.info(f"plan: {'on' if on else 'off'} — when on, Aura keeps a step-by-step plan for "
+            "this chat and shows it in the sidebar; a new chat starts without one · "
+            "/plan on|off [permanent] · /todos shows it")
+
+
 @command("/approvals")
 def _approvals(ctx, parts, line):
     from .approvals_suggest import command as appr
@@ -1249,8 +1267,11 @@ def _decision(ctx, parts, line):
 
 @command("/todos")
 def _todos(ctx, parts, line):
-    from .todo import load_items, render_checklist
-    items = load_items(ctx.eng)
+    from .todo import load_items, plan_on, render_checklist
+    if not plan_on():
+        print(ui.muted("  the plan is off for this chat — /plan on keeps one"))
+        return
+    items = load_items(ctx.eng, ctx.session.path.stem)
     print(render_checklist(items) if items else ui.muted("  no plan yet"))
 
 

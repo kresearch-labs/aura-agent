@@ -1,10 +1,13 @@
 """todo.py — externalized plan (combats goal drift).
 
-Store: engagement root `todos.jsonl`, one record per item: {seq, id, text,
-status: pending|in_progress|done, ts} `todo_write` (WRITE blast radius):
-add/update/tick items; returns the list. The open list is injected into the
-prompt every step (loop), so there is no separate read tool. The loop
-instruction tells the model to plan at task start and tick off as it goes.
+A plan exists only when the user turns the `plan` switch on (/plan on), and
+it belongs to ONE chat. Store: the project notebook's `todos.jsonl` (one file
+per project, not per chat), one record per item: {id, text, status:
+pending|in_progress|done|archived, ts, chat}. Records without a chat (older
+Aura kept one plan for the whole project) are never read again. `todo_write`
+(WRITE blast radius) adds/ticks items; the open list is shown to the model
+every step while the switch is on. Deep research may keep a plan for its own
+run (it plans first by design) even with the switch off.
 """
 from __future__ import annotations
 
@@ -25,19 +28,31 @@ def _todo_path(root: Path) -> Path:
     return Path(root) / TODO_FILE
 
 
-def _load(root: Path) -> list[dict]:
-    """Current plan: the LATEST record per id (the file is an append-only history
-    — every status change appends a line), archived items hidden, first-seen
-    order kept. Public alias: load_items.
+def plan_on() -> bool:
+    """The user's plan switch for this chat. Never raises."""
+    try:
+        from . import features
+        return features.enabled("plan")
+    except Exception:                                # noqa: BLE001
+        return False
+
+
+def _load(root: Path, chat: str = "", force: bool = False) -> list[dict]:
+    """This chat's current plan: the LATEST record per id (the file is an
+    append-only history — every status change appends a line), archived items
+    hidden, first-seen order kept. Empty while the plan switch is off (unless
+    forced: deep research's own plan). Public alias: load_items.
     """
+    if not chat or not (force or plan_on()):
+        return []
     latest: dict[str, dict] = {}
-    for rec in _load_history(root):
+    for rec in _load_history(root, chat):
         latest[rec["id"]] = rec          # Dict keeps first-seen order
     return [r for r in latest.values() if r.get("status") != "archived"]
 
 
-def _load_history(root: Path) -> list[dict]:
-    """Every todo record ever written, in file order."""
+def _load_history(root: Path, chat: str | None = None) -> list[dict]:
+    """Every todo record ever written (for one chat when named), in file order."""
     p = _todo_path(root)
     if not p.exists():
         return []
@@ -50,7 +65,7 @@ def _load_history(root: Path) -> list[dict]:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if rec.get("record") == "todo":
+        if rec.get("record") == "todo" and (chat is None or rec.get("chat") == chat):
             out.append(rec)
     return out
 
@@ -71,24 +86,24 @@ def _next_id(items: list[dict]) -> str:
     return f"T{max(nums, default=0) + 1}"
 
 
-def archive_done(root: Path) -> int:
-    """A new task starts: the finished steps of earlier tasks leave the plan. Open
-    steps stay. Returns how many were archived.
+def archive_done(root: Path, chat: str = "") -> int:
+    """A new task starts: the finished steps of earlier tasks leave this chat's
+    plan. Open steps stay. Returns how many were archived.
     """
     n = 0
-    for it in _load(root):
+    for it in _load(root, chat, force=True):
         if it.get("status") == "done":
-            _append(root, {"record": "todo", "ts": round(time.time(), 3),
+            _append(root, {"record": "todo", "ts": round(time.time(), 3), "chat": chat,
                            "id": it["id"], "text": it["text"], "status": "archived"})
             n += 1
     return n
 
 
-def made_at(root: Path) -> dict[str, float]:
-    """When each shown step was added (an id reused after archiving counts
-    from its new add)."""
+def made_at(root: Path, chat: str = "") -> dict[str, float]:
+    """When each shown step of this chat was added (an id reused after archiving
+    counts from its new add)."""
     out: dict[str, float] = {}
-    for rec in _load_history(root):
+    for rec in _load_history(root, chat):
         if rec.get("status") == "archived":
             out.pop(rec["id"], None)
         else:
@@ -122,14 +137,22 @@ def register_todo(mediator, fs_dispatch: dict, root) -> None:
     root = Path(root)
 
     def todo_write(args) -> str:
+        chat = str(getattr(mediator, "plan_chat", "") or "")
+        force = bool(getattr(mediator, "plan_forced", False))
+        if not (force or plan_on()):
+            return ("the plan switch is off for this chat — work without a plan; "
+                    "the user turns it on with /plan on")
+        if not chat:
+            return "error: no chat to keep a plan for"
         action = (args.get("action") or "add").lower()
-        items = _load(root)
+        items = _load(root, chat, force)
         if action == "add":
             text = str(args["text"]).strip()
             if not text:
                 return "error: empty text"
-            rec = {"record": "todo", "ts": round(time.time(), 3),
-                   "id": _next_id(items), "text": text, "status": "pending"}
+            rec = {"record": "todo", "ts": round(time.time(), 3), "chat": chat,
+                   "id": _next_id(_load_history(root, chat)), "text": text,
+                   "status": "pending"}
             _append(root, rec)
             items.append(rec)
         elif action in ("status", "set"):
@@ -143,7 +166,7 @@ def register_todo(mediator, fs_dispatch: dict, root) -> None:
                 tid = target["id"]
             if target is None:
                 return f"error: no todo {tid}"
-            rec = {"record": "todo", "ts": round(time.time(), 3),
+            rec = {"record": "todo", "ts": round(time.time(), 3), "chat": chat,
                    "id": tid, "text": target["text"], "status": status}
             _append(root, rec)
             target["status"] = status
@@ -151,12 +174,12 @@ def register_todo(mediator, fs_dispatch: dict, root) -> None:
             for it in items:
                 if it["status"] == "done":
                     _append(root, {"record": "todo", "ts": round(time.time(), 3),
-                                   "id": it["id"], "text": it["text"],
+                                   "chat": chat, "id": it["id"], "text": it["text"],
                                    "status": "archived"})
-            items = [i for i in _load(root) if i["status"] != "archived"]
+            items = [i for i in _load(root, chat, force) if i["status"] != "archived"]
         else:
             return f"error: unknown action '{action}' (add|status|clear_done)"
-        return render_checklist(_load(root))
+        return render_checklist(_load(root, chat, force))
 
     mediator.register(ToolSpec("todo_write", BlastRadius.WRITE, lambda a: None))
     fs_dispatch["todo_write"] = todo_write

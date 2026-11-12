@@ -173,7 +173,8 @@ class SelfTest:
         from aura_agent.todo import TODO_INSTRUCTION
         from aura_agent.tool_schemas import MAIN_AGENT_TOOLS
         g = GENERIC_SYSTEM
-        assert TODO_INSTRUCTION in g
+        assert TODO_INSTRUCTION not in g and TODO_INSTRUCTION not in DEFAULT_SYSTEM, (
+            "the plan instruction comes only with the plan switch, never in the fixed prompt")
         assert "[STATUS]" not in g and "[STATUS]" not in DEFAULT_SYSTEM, (
             "the [STATUS] block is gone (fix list #3: noise in every reply)")
         end = "only proven results enter the report."

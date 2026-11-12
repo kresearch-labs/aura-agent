@@ -693,6 +693,7 @@ def find(words: str, limit: int = 5) -> list[Option]:
 # asks: the checks (features), talk-only, a folder
 SWITCHES = {
     "proof": ("feature", "proof", "check the work (re-read, run the tests) before answering"),
+    "plan": ("feature", "plan", "keep a step-by-step plan for this chat (only when the user asks)"),
     "lint": ("feature", "auto_lint", "run the linter after code changes"),
     "repro_first": ("feature", "repro_first", "show a bug with a failing test first"),
     "drift_check": ("feature", "drift_check", "notice when the work wanders from the task"),
