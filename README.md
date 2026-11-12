@@ -184,4 +184,4 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 ---
 
-<div align="center"><sub>Built by <b>King</b> — one person, one consumer PC.</sub></div>
+<div align="center"><sub>Built by <b>King</b></sub></div>
