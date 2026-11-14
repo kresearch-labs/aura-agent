@@ -242,6 +242,13 @@ def ask_operator(eng, approver, tool: str, args: dict, grade: str,
         answer = "deny"                              # A broken prompt is a no
     if answer == "always" and not can_always:
         answer = "once"
+    # the person's card answers teach the personal pblock their habits
+    try:
+        from .pblocks import record_choice as _choice
+        _choice(heading or f"{tool} — {target}",
+                {"once": "yes", "always": "yes, always", "deny": "no"}.get(answer, answer))
+    except Exception:                                # noqa: BLE001
+        pass
     why_no = str(request.get("deny_reason") or "").strip()
     rec = consume_approval(eng, pa.id,
                            "approve" if answer in ("once", "always")

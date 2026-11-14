@@ -261,7 +261,10 @@ class Mediator:
         # scope before any question: the operator is never asked to approve
         # a call that scope would refuse anyway
         target = spec.extract_target(args)
-        if not self.scope.allows(name, target) and \
+        # /web all off: public sites ask again
+        _reading = name in ("web_crawl", "web_search") and \
+            getattr(self.scope, "web_all", True) and is_public_host(str(target or ""))
+        if not _reading and not self.scope.allows(name, target) and \
                 str(target or "").lower() not in getattr(self, "scope_ok", set()):
             if not self._ask_scope(name, args, str(target)):
                 self._audit(name, args, "REFUSED_SCOPE", target)
@@ -300,18 +303,46 @@ class Mediator:
                 ask_why = spec.ask_when(args)
             except Exception:
                 ask_why = "this call could not be checked — asking to be safe"
+        # Commands: asked by WHAT they do, not which site they name. Reading
+        # and downloading for the work never ask; running outside code asks
+        # once per task; sending things out asks every time; what the rules
+        # can't read goes to the checker model.
+        self._grant_for_call = None
+        _always = False
         if not ask_why and name in ("run_command", "process_start") and \
-                str((args or {}).get("network", "")).lower() in ("1", "true", "yes"):
-            ask_why = "the command asks for full network (past this project's allowed sites)"
-        if not ask_why and name in ("run_command", "process_start"):
-            _out = [h for h in _url_hosts(str((args or {}).get("cmd") or ""))
-                    if h not in ("localhost", "127.0.0.1", "[::1]", "0.0.0.0")   # This machine (dev servers)
-                    and not self.scope.contains(h)
-                    and not (getattr(self.scope, "web_all_set", False) and is_public_host(h))]
-            if _out:
-                ask_why = (f"the command reaches {', '.join(_out[:3])} — outside this "
-                           "project's allowed sites; yes lets it reach them for this chat")
-                self._sites_for_call = _out
+                not getattr(self, "_by_user", False):
+            _grants = getattr(self, "task_grants", None)
+            if _grants is None:
+                _grants = self.task_grants = set()
+            if str((args or {}).get("network", "")).lower() in ("1", "true", "yes") \
+                    and "full-network" not in _grants:
+                ask_why = ("the command asks for the full network, with no filter "
+                           "(yes covers this task)")
+                self._grant_for_call = "full-network"
+            if not ask_why:
+                from .action_risk import classify
+                _kind, _what = classify(str((args or {}).get("cmd") or ""),
+                                        getattr(self, "work_dir", None) or self.root)
+                if _kind == "send":
+                    ask_why = (f"it sends things out of this computer ({_what}) — "
+                               "asked every time")
+                    _always = True
+                elif _kind == "run_outside" and _what not in _grants and self.assist != "L3":
+                    ask_why = (f"it {_what} — outside code that runs on your computer "
+                               "(yes covers this task)")
+                    self._grant_for_call = _what
+                elif _kind == "unclear" and self.assist != "L3" \
+                        and ("check:" + str((args or {}).get("cmd"))) not in _grants:
+                    _chk = getattr(self, "checker", None)
+                    _verdict = "ASK: it reaches the network in a way Aura can't read"
+                    if _chk is not None:
+                        try:
+                            _verdict = str(_chk(str((args or {}).get("cmd") or "")) or _verdict)
+                        except Exception:              # noqa: BLE001
+                            pass
+                    if not _verdict.strip().upper().startswith("ALLOW"):
+                        ask_why = _verdict.split(":", 1)[-1].strip() or "the checker wasn't sure"
+                        self._grant_for_call = "check:" + str((args or {}).get("cmd"))
         # promptware gate: outside text in this task tried to give
         # instructions — commands ask first at every level, full autonomy too
         if not ask_why and getattr(self, "tainted", False):
@@ -323,7 +354,7 @@ class Mediator:
             if not self._ask(name, spec, args, None, ask_why,
                              allow_always=False,
                              heading=("needs your OK every time"
-                                      if spec.always_ask
+                                      if spec.always_ask or _always
                                       else "needs your OK")):
                 self._audit(name, args, "REFUSED_ASSIST", None)
                 raise Violation(
@@ -331,11 +362,9 @@ class Mediator:
                     "and nobody is here to answer — suggest it to the "
                     "operator in your answer instead")
             approved = True
-            if getattr(self, "_sites_for_call", None):   # The yes covers those sites
-                if not hasattr(self, "scope_ok"):
-                    self.scope_ok = set()
-                self.scope_ok |= {h.lower() for h in self._sites_for_call}
-        self._sites_for_call = None
+            if getattr(self, "_grant_for_call", None):   # The yes covers this task
+                self.task_grants.add(self._grant_for_call)
+        self._grant_for_call = None
         if self.assist == "L2" and not approved:
             try:
                 from .autonomy import grade_of as _g

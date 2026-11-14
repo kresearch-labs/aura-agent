@@ -725,6 +725,29 @@ class AgentLoop:
         except Exception as _swallowed:
             log_swallowed("loop.proof_note", _swallowed)
 
+    def _check_action(self, cmd: str) -> str:
+        """It sees only the user's request and the command — never the agent's own
+        words, so the agent can't talk it into a yes. "ALLOW" or "ASK: why".
+        """
+        key = (getattr(self, "_task_text", "") or "", cmd)
+        if key in self._check_cache:
+            return self._check_cache[key]
+        from ..action_risk import CHECK_PROMPT
+        verdict = "ASK: the check couldn't run"
+        try:
+            res = self.llm.chat([{"role": "system", "content": CHECK_PROMPT},
+                                 {"role": "user", "content": (
+                                     "The user's request:\n" + key[0][:1500]
+                                     + "\n\nThe command:\n" + cmd[:1500])}],
+                                tools=None, temperature=0, side=True, max_tokens=40)
+            said = str(getattr(res, "content", "") or "").strip()
+            if said.upper().startswith("ALLOW") or said.upper().startswith("ASK"):
+                verdict = said.splitlines()[0][:200]
+        except Exception as _swallowed:                    # noqa: BLE001
+            log_swallowed("loop.check_action", _swallowed)
+        self._check_cache[key] = verdict
+        return verdict
+
     def _model_trouble(self, why: str) -> None:
         """When it isn't giving proper answers, say so once per run, with the
         choices, and let the user decide.
@@ -1935,6 +1958,11 @@ class AgentLoop:
     def _start_run(self, session, task: str, work_dir) -> None:
         """Per-run state: workspace, rules folder, skill-pack limits, resets, receipt."""
         self._later = []          # Messages typed mid-task that run after it
+        # a yes to running outside code covers this task only; the checker model
+        # decides commands the rules can't read (action_risk.py)
+        self.m.task_grants = set()
+        self.m.checker = self._check_action
+        self._check_cache = {}
         # Deliverable gate — where TASK.md-named artifacts live (sandbox cwd in
         # arena runs, engagement dir otherwise) the workspace: the user's
         # project (build_agent sets it; same as the notebook in old-style
@@ -2249,7 +2277,12 @@ class AgentLoop:
                     _w = _pb.welcome_once()
                     if _w:
                         self.on_event("notice", {"text": _w, "calm": True})
-                _pg = _pb.ground(task, str(self.root),
+                # "continue" / "yes" / a reply is looked up by the task it goes
+                # on with — its own words match nothing
+                _pq = task
+                if _prev and (self._reply or len(str(task).split()) <= 3):
+                    _pq = f"{_prev}\n{task}"
+                _pg = _pb.ground(_pq, str(self.root),
                                  instance_id=self._pb_chat, chat=self._pb_chat)
                 if _pg:
                     session.append("system", content=_pg)
@@ -3548,6 +3581,11 @@ class AgentLoop:
                            rec, getattr(self, "_task_text", "") or "")
             if _n:
                 self.on_event("pblock_learn", {"candidates": _n})
+            # the person's habits, from what they typed this turn
+            _pb.learn_habits(getattr(self, "_session_ref", None),
+                             getattr(self, "_task_text", "") or "",
+                             str(getattr(self, "_pb_chat", "") or ""),
+                             llm=self.llm, on_event=self.on_event)
             # run-end closure (the tested build): output audit + verdict
             # linking, on a run that ended with an answer
             if model_claim:

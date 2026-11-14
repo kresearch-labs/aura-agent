@@ -57,7 +57,13 @@ def _site_ok_for(mediator: Mediator):
     """The proxy's allow rule: the project's list, plus the sites the user
     said yes to in this chat (the site card)."""
     def ok(host: str) -> bool:
-        return mediator.scope.contains(host) or             str(host or "").lower() in getattr(mediator, "scope_ok", set())
+        # reading and downloading for the work reach public sites (what a
+        # command DOES is checked before it runs — action_risk.py); private
+        # and local addresses still need the project's list or a yes
+        from ..mediator import is_public_host
+        return mediator.scope.contains(host) or (getattr(mediator.scope, "web_all", True)
+                                                 and is_public_host(str(host or ""))) or \
+            str(host or "").lower() in getattr(mediator, "scope_ok", set())
     return ok
 
 

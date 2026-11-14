@@ -252,7 +252,9 @@ def read_site(url: str, max_pages: int = 1, delay: float = 0.3,
 def register(mediator: Mediator, dispatch: dict) -> None:
     def allow(url: str) -> str | None:
         host = urllib.parse.urlparse(url).hostname or ""
-        if not mediator.scope.allows(WEB_CRAWL, host):
+        from ..mediator import is_public_host
+        if not (getattr(mediator.scope, "web_all", True) and is_public_host(host)) \
+                and not mediator.scope.allows(WEB_CRAWL, host):
             if mediator._ask_scope(WEB_CRAWL, {"url": url}, host):
                 return None                          # The user allowed it (the site card)
             return (f"'{host}' is not in this project's allowed list and the user didn't "

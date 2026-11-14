@@ -209,6 +209,11 @@ def _persona(ctx, parts, line):
     elif sub == "train":
         return Result(task=_train_task(rest, getattr(ctx.m, "mode", "act") == "plan"),
                       shown="/persona train" + (f" — {rest}" if rest.strip() else ""))
+    elif sub == "forget" and rest:
+        ok = P.forget_habit(rest.strip())
+        (ui.success if ok else ui.info)(
+            f"forgotten: {rest.strip()} (kept as history, never used again)" if ok
+            else f"no habit {rest.strip()} — /persona learned personal lists them")
     elif sub == "learned":
         _learned(rest or P.PERSONAL)
     elif sub == "review":

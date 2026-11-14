@@ -1170,12 +1170,30 @@ def run_selftest(project_root: str | None = None) -> str:
     # keychain (the checks that write keys also use a sandbox Aura home)
     prev = _os.environ.get("AURA_KEYSTORE")
     _os.environ["AURA_KEYSTORE"] = "file"
+    # the checks run tasks through the agent, and every task writes the pblock
+    # diary and may learn — into a throwaway folder, never the user's real
+    # pblocks (they had "bugfix-add" / "selftest" runs in their diary)
+    prev_pb = _os.environ.get("AURA_PBSTORES")
+    _os.environ["AURA_PBSTORES"] = tempfile.mkdtemp(prefix="aura-selftest-pblocks-")
+    _reset_pblock_cache()
     try:
         st = SelfTest(project_root)
         st.run_all()
         return st.summary()
     finally:
-        if prev is None:
-            _os.environ.pop("AURA_KEYSTORE", None)
-        else:
-            _os.environ["AURA_KEYSTORE"] = prev
+        for k, v in (("AURA_KEYSTORE", prev), ("AURA_PBSTORES", prev_pb)):
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+        _reset_pblock_cache()
+
+
+def _reset_pblock_cache() -> None:
+    """The engine keeps its loaded pblocks per folder; drop them so the next
+    briefing reads the folder AURA_PBSTORES names now."""
+    try:
+        from aura_agent.pblock_engine.ground import _CACHE
+        _CACHE["root"] = _CACHE["orch"] = None
+    except Exception:                                   # noqa: BLE001
+        pass

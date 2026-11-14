@@ -210,16 +210,29 @@ class PersonaStore:
         c["framing_embedding"] = np.asarray(
             self.frame_embedder.embed(framing) if self.frame_embedder
             else embedding, dtype=np.float32).reshape(-1).tolist() if (self.frame_embedder or embedding) else None
-        # corroboration: does this match an existing pending/candidate case?
+        # the same lesson from the same task again is not new and proves
+        # nothing: no copy is stored, nothing is strengthened
+        dup = self._find_duplicate(c)
+        if dup is not None:
+            return dup
+        # corroboration: the same lesson from a DIFFERENT task — the existing
+        # case is strengthened (and promoted when proven often enough); no
+        # copy is stored
         ally = self._find_corroboration(c)
         if ally is not None:
-            ally["corroboration_count"] += 1
-            ally["confidence"] = min(1.0, ally["confidence"] + 0.25)
-            c["corroboration_count"] = 1
-            if ally["corroboration_count"] + 1 >= self.PROMOTE_MIN_CORROBORATION:
+            ally["corroboration_count"] = int(ally.get("corroboration_count") or 0) + 1
+            ally["confidence"] = min(1.0, float(ally.get("confidence") or 0.3) + 0.25)
+            refs = list(ally.get("corroborated_by") or [])
+            if origin_ref and origin_ref not in refs:
+                refs.append(origin_ref)
+            ally["corroborated_by"] = refs
+            if ally.get("status") != "active" and \
+                    ally["corroboration_count"] + 1 >= self.PROMOTE_MIN_CORROBORATION:
                 ally["status"] = "active"
                 ally["confirmed"] = True
                 ally["confidence"] = min(1.0, ally["confidence"] + 0.2)
+            self.save()
+            return ally
         # contradiction: does this clash with an ACTIVE case?
         for other in self.active_cases():
             if embedding and other.get("embedding"):
@@ -236,22 +249,37 @@ class PersonaStore:
         Matches on framing text (exact-ish) OR framing-embedding similarity.
         Situation similarity is deliberately NOT the criterion: two different
         situations confirming one lesson is exactly what corroboration means."""
-        fe = self._frame_emb(c)
-        if fe is None:
+        return self._same_lesson(c, same_task=False)
+
+    def _find_duplicate(self, c: Case) -> Optional[Case]:
+        """The same lesson already learned from the same task (origin_ref)."""
+        if not c.get("origin_ref"):
             return None
+        return self._same_lesson(c, same_task=True)
+
+    def _same_lesson(self, c: Case, same_task: bool) -> Optional[Case]:
+        """A lived case teaching the same lesson (same framing text, or a
+        framing embedding at least 0.90 similar), from the same task
+        (same_task) or from a different one (independent proof). Seed rows
+        and retired / superseded cases never match."""
+        fe = self._frame_emb(c)
+        ref = c.get("origin_ref") or ""
+        want = c["framing"].strip().lower()
         for other in self.cases:
-            if other["id"] == c["id"] or other.get("status") == "retired":
+            if other["id"] == c["id"] or other.get("origin") == "seed":
                 continue
-            if other.get("status") not in ("candidate", "pending"):
+            if other.get("status") not in ("candidate", "pending", "active"):
                 continue
-            # same framing text = direct corroboration
-            if other["framing"].strip().lower() == c["framing"].strip().lower():
+            if ref and ((other.get("origin_ref") or "") == ref) != same_task:
+                continue
+            if not ref and same_task:
+                continue
+            if other["framing"].strip().lower() == want:
                 return other
-            oe = self._frame_emb(other)
-            if oe is None:
+            if fe is None:
                 continue
-            sim = float(fe @ oe)
-            if sim >= 0.90:   # Framing-similarity bar (embeddings are sharper on text)
+            oe = self._frame_emb(other)
+            if oe is not None and float(fe @ oe) >= 0.90:
                 return other
         return None
 
@@ -483,6 +511,8 @@ class PersonaStore:
             c = self.cases[idx[j]]
             if c.get("status", "active") != "active":
                 continue
+            if c.get("kind") == "habit":
+                continue                   # A person's habits: briefed on their own (habits.py)
             if c.get("origin") != "seed" and is_fragment(c.get("framing", "")):
                 continue
             # lived cases outrank seeds at equal similarity (design doc sec 8)

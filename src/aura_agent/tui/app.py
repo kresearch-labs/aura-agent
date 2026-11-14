@@ -929,6 +929,12 @@ class ChatApp:
         self.start_turn(stripped)
 
     def start_turn(self, text: str, shown: str | None = None) -> None:
+        try:                                    # Pasted text is never "the person's words"
+            from .. import pblocks as _pb
+            _pb.note_pasted(getattr(self.editor, "last_pasted", None) or [])
+            _pb.CURRENT_TASK["text"] = text
+        except Exception:      # noqa: BLE001
+            pass
         if self.state.get("killed") and (self.eng / ".kill").exists():
             self.say(cells.notice_cell(f"the stop flag is set — remove "
                                        f"{self.eng / '.kill'} to run tasks", self.s, self.cw))

@@ -35,6 +35,10 @@ class Editor:
     history: list[str] = field(default_factory=list)
     kill_ring: list[str] = field(default_factory=list)
     pastes: dict[int, str] = field(default_factory=dict)
+    # what was pasted into the message being typed (not the person's own words:
+    # the personal pblock never learns habits from it); taken by submit()
+    pasted_now: list = field(default_factory=list)
+    last_pasted: list = field(default_factory=list)
     files: dict[int, str] = field(default_factory=dict)       # [File #n · …] chips → paths
     file_text: dict[int, str] = field(default_factory=dict)   # What each becomes (the app, at send)
     _undo: list[tuple[str, int]] = field(default_factory=list)
@@ -127,6 +131,10 @@ class Editor:
             shown = whole
         self.text = self.text[:start] + shown + self.text[start:]
         self.cursor = start + len(shown)
+        if self.pasted_now and self._pasting and self._pasting.get("text")                 and whole.startswith(self._pasting["text"]):
+            self.pasted_now[-1] = whole            # The same paste, grown
+        else:
+            self.pasted_now.append(whole)
         self._last_yank = None
         self._hist_i = None
         self._pasting = {"t": time.monotonic(), "start": start, "end": self.cursor,
@@ -158,6 +166,8 @@ class Editor:
         """Take the text out (expanded) and record it in history."""
         raw = self.text
         full = self.expanded()
+        self.last_pasted = list(self.pasted_now) + [v for v in self.file_text.values() if v]
+        self.pasted_now = []
         if raw.strip() and (not self.history or self.history[-1] != raw):
             self.history.append(raw)
         self.text, self.cursor = "", 0

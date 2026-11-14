@@ -475,9 +475,27 @@ def store_seats() -> list[str]:
     return sorted(p.name[:-len("_store.jsonl")] for p in d.glob("*_store.jsonl"))
 
 
+# Aura's own refusals and notes: faults of Aura, never lessons about the work —
+# its safe box, permission cards, folder guard, plan / discuss mode, loop
+# guard, stop flag and its own notes to the model
+AURA_FAULTS = (
+    r"can't be used —", r"isn't available", r"\bplan mode\b", r"discuss mode",
+    r"not allowed in plan mode", r"wasn't allowed", r"sandbox\.required",
+    r"blocked by the loop guard", r"the safe box blocked it", r"awaiting_approval",
+    r"operator (declined|expired)", r"banned command token", r"kill switch",
+    r"\[AURA NOTE\]", r"\[LOOP GUARD\]", r"Violation", r"refused: the user",
+    r"user said no", r"nobody is here to", r"needs operator approval", r"RECOMMEND: OPTION",
+)
+
+
 def _point_env() -> None:
     """The organs read AURA_PBSTORES; point them at Aura's one place."""
     os.environ.setdefault("AURA_PBSTORES", str(stores_dir()))
+    try:
+        from .pblock_engine.pblock_learn import set_host_faults
+        set_host_faults(AURA_FAULTS)
+    except Exception:                                   # noqa: BLE001
+        pass
 
 
 def ground(task: str, root: str, instance_id: str = "", chat: str = "") -> str:
@@ -504,7 +522,10 @@ def ground(task: str, root: str, instance_id: str = "", chat: str = "") -> str:
                 del orch.personas[n]
         text = G.compile_run_ground(task, root, instance_id=instance_id) or ""
         # a briefing with no lessons in it is noise in front of every task
-        return text if ground_seats(text) else ""
+        text = text if ground_seats(text) else ""
+        # the person's habits that fit this task, on their own (habits.py)
+        how = habits_brief(task, chat)
+        return (text + ("\n\n" if text else "") + how) if how else text
     except Exception as e:                              # noqa: BLE001
         dbg(f"[pblocks] ground failed: {type(e).__name__}: {e}")
         return ""
@@ -619,3 +640,117 @@ def learn(session, work_dir, rec, task: str) -> int:
         return int(learn_from_session(session, str(work_dir), rec, task or "") or 0)
     except Exception:                                   # noqa: BLE001
         return 0
+
+
+# ------------------------------------------------- the personal pblock's habits --
+# variants/personal.md: the personal pblock learns the person's habits — only
+# from their own typed words and their card answers (never pasted text, tool
+# output, pages or files). Direct words are trusted at once; a correction is
+# worded by one short model call and waits for another task; the same card
+# answer three times is a habit; "noted: … · undo" is said.
+PASTED: list = []              # What the person pasted into the current message
+CURRENT_TASK = {"text": ""}    # The task being worked on (card answers carry it)
+_PHRASE = (
+    "You turn a person's correction of an AI agent into ONE habit: how they want "
+    "the agent to work (style, process, what to ask or check first, what to avoid). "
+    "Reply with one short sentence in the third person that starts with \"Wants\", "
+    "\"Prefers\" or \"Doesn't want\". If the message is only about this task's "
+    "content (a bug, a value, a file, a fact) and says nothing about how to work, "
+    "reply NONE.")
+
+
+def _typed_only(text: str) -> str:
+    """The person's own typed words: anything they pasted is taken out."""
+    out = str(text or "")
+    for chunk in PASTED:
+        if chunk and len(chunk) >= 12:
+            out = out.replace(chunk, " ")
+    return out
+
+
+def note_pasted(chunks) -> None:
+    PASTED[:] = [str(c) for c in (chunks or []) if c]
+
+
+def habits_brief(task: str, chat: str = "") -> str:
+    """The person's habits that fit this task, or ""."""
+    if not available():
+        return ""
+    try:
+        _point_env()
+        ensure_personal()
+        from .pblock_engine.habits import brief
+        return brief(str(stores_dir()), task, chat)
+    except Exception:                                   # noqa: BLE001
+        return ""
+
+
+def learn_habits(session, task: str, chat: str, llm=None, on_event=None) -> int:
+    """After a turn: the person's last typed message, with the agent's answer
+    before it, may teach a habit. Says "noted: … · undo" for each."""
+    if not available() or session is None:
+        return 0
+    try:
+        from .notes import is_users_words, users_words
+        msgs = [m for m in (getattr(session, "messages", None) or []) if isinstance(m, dict)]
+        idx = next((i for i in range(len(msgs) - 1, -1, -1) if is_users_words(msgs[i])), None)
+        if idx is None:
+            return 0
+        said = _typed_only(users_words(msgs[idx]))
+        prev = next((str(m.get("content") or "") for m in reversed(msgs[:idx])
+                     if m.get("role") == "assistant" and str(m.get("content") or "").strip()), "")
+        _point_env()
+        ensure_personal()
+        from .pblock_engine import habits as H
+
+        def phrase(answer: str, text: str) -> str:
+            if llm is None:
+                return ""
+            try:
+                res = llm.chat([{"role": "system", "content": _PHRASE},
+                                {"role": "user", "content": (
+                                    "The agent's last answer (start):\n" + answer[:900]
+                                    + "\n\nThe person replied:\n" + text[:600])}],
+                               tools=None, temperature=0, side=True, max_tokens=60)
+                return str(getattr(res, "content", "") or "").strip().splitlines()[0][:200]
+            except Exception:                           # noqa: BLE001
+                return ""
+        if H.kind_of(said) == "praise":
+            H.praise(str(stores_dir()), chat)
+            return 0
+        got = H.learn_message(str(stores_dir()), said, prev, task, phrase=phrase)
+        for g in got:
+            if on_event is not None and g.get("new"):
+                on_event("notice", {"calm": True, "text": (
+                    f"noted: {g['habit']}" + ("" if g.get("trusted") else
+                                              " (until it shows up again)")
+                    + (f" — replaces: {g['replaced'][0]}" if g.get("replaced") else "")
+                    + f" · undo: /persona forget {g['id']}")})
+        return len(got)
+    except Exception:                                   # noqa: BLE001
+        return 0
+
+
+def record_choice(question: str, choice: str, on_event=None) -> None:
+    """The person's answer on a card (asked at least the third time in
+    different tasks → a habit)."""
+    if not available() or not question or not choice:
+        return
+    try:
+        _point_env()
+        ensure_personal()
+        from .pblock_engine.habits import record_choice as _rc
+        g = _rc(str(stores_dir()), question, choice, CURRENT_TASK.get("text") or "")
+        if g and on_event is not None:
+            on_event("notice", {"calm": True, "text": (
+                f"noted: you {g['habit']} · undo: /persona forget {g['id']}")})
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
+def forget_habit(case_id: str) -> bool:
+    try:
+        from .pblock_engine.habits import forget
+        return forget(str(stores_dir()), case_id)
+    except Exception:                                   # noqa: BLE001
+        return False
