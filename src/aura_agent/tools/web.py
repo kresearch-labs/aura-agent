@@ -357,7 +357,8 @@ def register(mediator: Mediator, dispatch: dict) -> None:
             u = (us[0] if us else "") if isinstance(us, list) else (us or "")
         return urllib.parse.urlparse(str(u)).hostname
 
-    mediator.register(ToolSpec(WEB_CRAWL, BlastRadius.READ, _target))
+    mediator.register(ToolSpec(WEB_CRAWL, BlastRadius.READ, _target),
+                      plan_safe=True)        # Reading a page is research: plan mode allows it
     dispatch[WEB_CRAWL] = web_crawl
 
     # web_search (websearch.py)

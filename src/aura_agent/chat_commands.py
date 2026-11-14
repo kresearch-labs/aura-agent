@@ -26,6 +26,7 @@ from .sessions import Session, new_session
 class Result:
     handled: bool = True
     task: str | None = None        # The command turned into a task to run
+    shown: str | None = None       # What the chat shows for it (the task itself goes to the model)
     exit: bool = False
 
 
@@ -1187,7 +1188,8 @@ def _team(ctx, parts, line):
         from . import teams_wiring as W
         bad = W.broken()
         what = ", ".join(bad) if bad else "any operation that fails"
-        return Result(task=(f"The team hub's wiring needs fixing ({what} stopped working — the "
+        return Result(shown="/teams wire fix — repair the hub's wiring",
+                      task=(f"The team hub's wiring needs fixing ({what} stopped working — the "
                             "app may have changed). Look at team_status, research the app's "
                             "current API for those operations (official docs first), fix them in "
                             "the wiring in use, prove it with team_wire_check, show me what "
@@ -1198,7 +1200,8 @@ def _team(ctx, parts, line):
         if not url:
             ui.info("first the hub's address — just tell Aura, e.g. 'connect to our hub at …'")
             return Result()
-        return Result(task=(f"Wire our team hub at {url} for Aura Teams: research which app it "
+        return Result(shown=f"/teams wire — connect the hub at {url}",
+                      task=(f"Wire our team hub at {url} for Aura Teams: research which app it "
                             "is and its API or MCP server (official docs first), write a wiring "
                             "(team_wiring_format), prove it with team_wire_check, and tell me "
                             "the result before team_wire_use."))
@@ -1539,7 +1542,7 @@ def _custom_or_unknown(ctx, cmd: str, line: str) -> Result:
         cc = None
     if cc is not None:
         ui.info(f"/{cc.name} → task")
-        return Result(task=expand(cc, line[len(cmd):].strip()))
+        return Result(task=expand(cc, line[len(cmd):].strip()), shown=line)
     from .command_registry import COMMANDS
     import difflib
     near = difflib.get_close_matches(cmd, [c.name for c in COMMANDS], n=1)
@@ -1648,6 +1651,25 @@ def _tui(ctx, parts, line):
     else:
         ui.info(f"chat screen: {get('look.screen')} — this is the classic screen; "
                 "/tui fullscreen|inline saves the choice for the next start")
+
+
+@command("/display")
+def _display(ctx, parts, line):
+    """The chat screen handles /display itself; on the classic screen the
+    choice is saved for it."""
+    from .options import get, set_
+    arg = [p.lower() for p in parts[1:]]
+    if arg[:1] == ["thinking"] and arg[1:2] in (["on"], ["off"]):
+        set_("look.show_thinking", arg[1] == "on")
+        ui.success(f"thinking {arg[1]} — saved")
+        return Result()
+    if arg[:1] and arg[0] in ("simple", "detailed", "everything"):
+        set_("look.display", arg[0])
+        ui.success(f"display: {arg[0]} — saved for the chat screen")
+        return Result()
+    ui.info(f"display: {get('look.display')} · usage: /display simple|detailed|everything · "
+            "/display thinking on|off")
+    return Result()
 
 
 @command("/focus")

@@ -181,6 +181,46 @@ def ready() -> bool:
     return os.name == "nt" and installed() is not None and backend() is not None
 
 
+def limits() -> str:
+    """'' when the box runs what installs and downloads need; else what it
+    can't do, in plain words. Checked by really running Python inside the
+    box once per Windows build + box version (cached next to the box)."""
+    if not ready():
+        return ""
+    import platform
+    key = f"{platform.version()}|{installed()}"
+    cache = folder() / "probe.json"
+    try:
+        old = json.loads(cache.read_text(encoding="utf-8"))
+        if old.get("key") == key:
+            return str(old.get("limits") or "")
+    except (OSError, ValueError):
+        pass
+    import tempfile
+    from .sandbox import scrubbed_env
+    root = Path(tempfile.mkdtemp(prefix="aura-box-check-"))
+    probe = f'"{sys.executable}" -c "import _ssl, _hashlib, ctypes"'
+    out = ""
+    try:
+        proc, _note = run(probe, root, str(root), 60, scrubbed_env(), False)
+        if proc is not None and proc.returncode != 0:
+            err = ((proc.stderr or "") + (proc.stdout or "")).strip().splitlines()
+            out = ("the safe box on this Windows can't load Python's SSL and system "
+                   "libraries, so installs and downloads (pip, npm and similar) can't run "
+                   "in it — Aura asks before running those on your computer"
+                   + (f" ({err[-1][:120]})" if err else ""))
+    except Exception:                                # noqa: BLE001
+        return ""
+    finally:
+        import shutil
+        shutil.rmtree(root, ignore_errors=True)
+    try:
+        cache.write_text(json.dumps({"key": key, "limits": out}), encoding="utf-8")
+    except OSError:
+        pass
+    return out
+
+
 def proxy_supported() -> bool:
     b = backend() or {}
     return "identitylessLoopbackProxy" in (b.get("capabilities") or [])

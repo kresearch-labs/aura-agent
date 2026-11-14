@@ -38,7 +38,7 @@ def _ram_gb() -> float:
             return m.total / GB
         if sys.platform == "darwin":
             out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
-                                 text=True, timeout=5).stdout
+                                 text=True, encoding="utf-8", errors="replace", timeout=5).stdout
             return int(out.strip()) / GB
         for line in open("/proc/meminfo", encoding="utf-8"):
             if line.startswith("MemTotal:"):
@@ -55,7 +55,7 @@ def _nvidia() -> list[dict]:
     try:
         out = subprocess.run([exe, "--query-gpu=name,memory.total",
                               "--format=csv,noheader,nounits"],
-                             capture_output=True, text=True, timeout=10).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).stdout
     except Exception:                                # noqa: BLE001
         return []
     gpus = []

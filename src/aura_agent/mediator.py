@@ -218,9 +218,19 @@ class Mediator:
         # Changing one of Aura's own settings always asks the user with a card,
         # so it stays possible in plan and discuss mode
         _own_setting = name == "settings_set"
-        if self.mode == "plan" and name not in self.plan_safe and not _own_setting:
+        # Plan mode also runs commands that only look (ls, git status, cat ….
+        _looks = False
+        if self.mode == "plan" and name == "run_command":
+            try:
+                from .tui.cells import looking_command
+                _looks = looking_command(str((args or {}).get("cmd") or "")) is not None
+            except Exception:                        # noqa: BLE001
+                _looks = False
+        if self.mode == "plan" and name not in self.plan_safe and not _own_setting                 and not _looks:
             self._audit(name, args, "REFUSED_MODE", None)
-            raise Violation(f"mode: tool '{name}' not allowed in plan mode")
+            raise Violation(f"plan mode: '{name}' isn't available — the user asked for a plan "
+                            "first. Read and look as much as you need, then write the plan in "
+                            "your answer; the user switches to /mode act to have it done")
         # Discuss: the user wants to talk, not to have the work done — reading
         # and searching to understand are fine, nothing that changes anything
         # (files, commands, plans) runs

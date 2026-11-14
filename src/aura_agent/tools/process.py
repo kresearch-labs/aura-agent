@@ -192,7 +192,7 @@ def started_at(pid: int) -> float | None:
             return None
     try:
         out = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], capture_output=True,
-                             text=True, timeout=5).stdout.strip()
+                             text=True, encoding="utf-8", errors="replace", timeout=5).stdout.strip()
         if not out:
             return None
         days = 0

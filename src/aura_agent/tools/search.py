@@ -299,7 +299,7 @@ def search_files(root: Path, args: dict) -> str:
     from .fs import _base, _resolve_in_root
     pattern = str(args.get("pattern") or args.get("query") or "")
     mode = str(args.get("in") or args.get("target") or "content").lower()
-    sub = _resolve_in_root(root, str(args.get("path") or "."))
+    sub = _resolve_in_root(root, str(args.get("path") or "."), read=True)
     if not sub.exists():
         raise FileNotFoundError(f"{args.get('path')} doesn't exist in the project")
     root = _base(root, sub)          # An allowed folder outside the project

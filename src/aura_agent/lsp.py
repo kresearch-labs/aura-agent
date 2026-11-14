@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -51,6 +52,18 @@ def find_server(lang: str) -> list[str] | None:
         exe = shutil.which(cmd[0])
         if exe:
             return [exe] + cmd[1:]
+    if lang == "python":                # Basedpyright added to Aura's own Python
+        import sysconfig
+        for d in {sysconfig.get_path("scripts"), os.path.dirname(sys.executable)}:
+            for n in ("basedpyright-langserver", "basedpyright-langserver.exe"):
+                p = os.path.join(d or "", n)
+                if d and os.path.isfile(p):
+                    return [p, "--stdio"]
+    if lang == "c":                     # LLVM's installer and Homebrew's llvm don't add it to PATH
+        for p in (os.path.expandvars(r"%ProgramFiles%\LLVM\bin\clangd.exe"),
+                  "/opt/homebrew/opt/llvm/bin/clangd", "/usr/local/opt/llvm/bin/clangd"):
+            if os.path.isfile(p):
+                return [p]
     return None
 
 

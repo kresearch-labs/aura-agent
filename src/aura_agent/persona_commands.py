@@ -21,28 +21,42 @@ from . import pblocks as P
 from . import ui
 from .chat_commands import Result, command
 
-def _train_task(topic: str = "") -> str:
+def _train_task(topic: str = "", plan: bool = False) -> str:
     from pathlib import Path
     docs = Path(__file__).parent / "pblock_engine" / "docs"
     first = (f"I want to work on: {topic}. " if topic.strip() else
              "First ask me what I want to work on, with the clarify tool. ")
+    # Plan mode allows proposing, not writing or training
+    plan_note = ("Plan mode is on, so write and train nothing yet: propose the pblocks "
+                 "one at a time with pblock_propose, then tell me to switch to /mode act "
+                 "so you can write their plans and train them. " if plan else "")
     return (
-        "I want to train new pblocks for Persona. " + first +
+        plan_note + "I want to train new pblocks for Persona. " + first +
         "Then decide how many pblocks that work needs: suggest at least 1 and at most 7 "
         "(I may add more myself). Go through them ONE AT A TIME with the pblock_propose "
         "tool (name, what it judges, the general kind of training data); only propose real "
         "pblocks for my work — never call it to test it. If I answer "
         "Change it, Tell me more or Other, do that and propose the same pblock again. "
-        "When every pblock has an answer, train each approved one: read the guides in "
-        f"{docs} (HOW-PBLOCKS-WORK.md, TRAINING-PBLOCKS.md, CORPUS_TRAINING_METHODOLOGY.md, "
-        "and example-pblock.yml for the template format) and follow them — find real "
-        "data with real outcomes, declare the decision space, never pad the corpus to a "
-        "number. Ask me before any download. Write the template (.yml) and the corpus "
-        "plan (.yml: craft_truths, dimensions, negations, vocabulary, and real_records, "
-        "each with situation, outcome and its source) for each pblock, then call "
-        "pblock_train. "
-        "At the end, tell me which pblocks were added and which did not pass their gates, "
-        "and why.")
+        "When every pblock has an answer, train each approved one. First read "
+        f"CORPUS_TRAINING_METHODOLOGY.md in {docs} — it is the method; follow its three "
+        "waves in order (HOW-PBLOCKS-WORK.md and TRAINING-PBLOCKS.md explain why; "
+        "example-pblock.yml is a toy, only for the template's format). "
+        "Wave 1, real truth: for work on code or any checkable thing, do the walk — take "
+        "a real working artifact (write or fetch a working one), build a mutator that "
+        "breaks one thing at a time and a grader that runs each version and measures the "
+        "result, fix one random seed, and record every step (situation, outcome 1 or 0, "
+        "source: the artifact and the seed). For judgments about the world, harvest the "
+        "field's own records with their real outcomes. Ask me before any download. Save "
+        "these rows as JSONL. Wave 2: check the labels' words really appear in those rows "
+        "and fix the harvest, never the labels. Wave 3: write the corpus plan (.yml) — "
+        "25-30 craft_truths from real practice, the dimensions the judgment really varies "
+        "across, the real failure modes as negations, vocabulary pairs. Then call "
+        "pblock_train with the template, the plan and the real rows (records). It holds "
+        "every pblock to the methodology's gates — 500+ cases, 50+ examples on each side "
+        "of every label, 10+ distinct situations — and never pads: if one fails, grow "
+        "the walk or the harvest and train again. "
+        "At the end, show me a table per pblock: real rows, generated rows, total, "
+        "verdict — and for any that didn't pass, why.")
 
 
 def _chat(ctx) -> str:
@@ -117,7 +131,8 @@ def _picker(ctx) -> Result:
                 _add(path)
         elif pick == "train":
             topic = ctx.ask("what do you want to work on? (Enter: Aura asks you)").strip()
-            return Result(task=_train_task(topic))
+            return Result(task=_train_task(topic, getattr(ctx.m, "mode", "act") == "plan"),
+                          shown="/persona train" + (f" — {topic}" if topic else ""))
         elif isinstance(pick, tuple):
             _one(ctx, pick[1])
 
@@ -192,7 +207,8 @@ def _persona(ctx, parts, line):
     elif sub == "add" and rest:
         _add(rest)
     elif sub == "train":
-        return Result(task=_train_task(rest))
+        return Result(task=_train_task(rest, getattr(ctx.m, "mode", "act") == "plan"),
+                      shown="/persona train" + (f" — {rest}" if rest.strip() else ""))
     elif sub == "learned":
         _learned(rest or P.PERSONAL)
     elif sub == "review":

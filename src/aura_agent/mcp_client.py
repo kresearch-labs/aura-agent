@@ -74,7 +74,7 @@ class MCPServer:
             self._proc = subprocess.Popen(
                 [self.command, *self.args],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1,
+                stderr=subprocess.DEVNULL, env=env, text=True, encoding="utf-8", errors="replace", bufsize=1,
                 **({} if os.name == "nt" else {"start_new_session": True}))
             if os.name == "nt":
                 from .sandbox_os import _job_for

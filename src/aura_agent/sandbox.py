@@ -63,7 +63,7 @@ def docker_available() -> bool:
         try:
             r = subprocess.run(
                 ["docker", "info", "--format", "{{.ServerVersion}}"],
-                capture_output=True, text=True, timeout=10)
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             _DOCKER_OK = r.returncode == 0 and shutil.which("docker") is not None
         except Exception:
             _DOCKER_OK = False
@@ -78,7 +78,7 @@ def _sandbox_image() -> str | None:
     for name in wanted:
         r = subprocess.run(
             ["docker", "images", "-q", name], capture_output=True,
-            text=True, timeout=10)
+            text=True, encoding="utf-8", errors="replace", timeout=10)
         if r.returncode == 0 and r.stdout.strip():
             return name
     return None
@@ -209,6 +209,20 @@ def add_bind(argv: list[str], path: str) -> None:
 
 def _net_word(network: bool, sites: bool) -> str:
     return "on" if network else ("allowed sites only" if sites else "off")
+
+
+def run_outside(cmd: str, cwd: str | None, timeout: float,
+                extra_env: dict | None = None):
+    """Run on the user's computer, outside the safe box — only after they said
+    yes (or at L3 with 'Stop it' off). Credentials are still scrubbed from the
+    environment; everything it starts still stops with it."""
+    from . import sandbox_os as SO
+    env = scrubbed_env()
+    env.update(extra_env or {})
+    if os.name == "nt":
+        return SO.run_in_job(cmd, timeout, cwd, env), "ran on your computer, outside the safe box"
+    return (SO.run_tree(cmd, shell=True, timeout=timeout, cwd=cwd, env=env),
+            "ran on your computer, outside the safe box")
 
 
 def run_sandboxed(cmd: str, engagement_root: Path, cwd: str | None,

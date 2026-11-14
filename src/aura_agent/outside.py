@@ -19,6 +19,10 @@ _SECRET_DIRS = (".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker",
                 ".config/gcloud", ".config/gh", ".password-store")
 # single files that hold tokens or passwords (git, pip upload, npm, curl/ftp)
 _SECRET_FILES = (".netrc", ".git-credentials", ".pypirc", ".npmrc")
+# inside Aura's own folder: where its program lives, and its key files
+_AURA_NEVER_DIRS = ("tools", "python", "bin", "cache")
+_AURA_KEY_FILES = ("keystore.json", "vault.json", "secrets.json")
+_KEY_WORDS = ("secret", "token", "credential", "vault", "keystore", ".key", "password")
 
 
 def never_reason(path: Path) -> str | None:
@@ -26,10 +30,20 @@ def never_reason(path: Path) -> str | None:
     p = Path(path).resolve()
     from .paths import aura_home
     try:
-        p.relative_to(aura_home().resolve())
-        return "it is Aura's own folder (settings, keys, chats)"
+        rel = p.relative_to(aura_home().resolve())
     except ValueError:
-        pass
+        rel = None
+    if rel is not None:
+        # Aura's own folder: its keys and its installed program never;
+        # everything else (settings, chats, skills, pblocks, memory, logs) is
+        # asked for with a card, like any folder outside the project
+        parts = [x.lower() for x in rel.parts]
+        if parts and parts[0] in _AURA_NEVER_DIRS:
+            return "it is Aura's installed program — changing it could break Aura"
+        name = parts[-1] if parts else ""
+        if name in _AURA_KEY_FILES or any(w in name for w in _KEY_WORDS):
+            return "it holds Aura's keys"
+        return None
     home = Path.home().resolve()
     for d in _SECRET_DIRS:
         try:
@@ -41,6 +55,30 @@ def never_reason(path: Path) -> str | None:
         if p == (home / f).resolve():
             return f"~/{f} holds passwords or tokens"
     return None
+
+
+def aura_program(path: Path) -> bool:
+    """Inside Aura's own program (its code, guides, templates) — never its
+    data. Readable from a chat: Aura's own instructions point the model at
+    its guides (the pblock training docs); writing there stays refused."""
+    try:
+        here = Path(__file__).resolve().parent         # The aura_agent package
+        Path(path).resolve().relative_to(here)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def aura_program(path: Path) -> bool:
+    """Inside Aura's own program (its code, guides, templates) — never its
+    data. Readable from a chat: Aura's own instructions point the model at
+    its guides (the pblock training docs); writing there stays refused."""
+    try:
+        here = Path(__file__).resolve().parent         # The aura_agent package
+        Path(path).resolve().relative_to(here)
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def folder_of(path: Path) -> Path:

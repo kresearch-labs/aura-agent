@@ -125,7 +125,7 @@ def cmd_update(from_dir: str | None = None, check_only: bool = False,
             if (src / ".git").exists() and not from_dir:
                 print("→ getting the latest source (git pull)...")
                 r = subprocess.run(["git", "-C", str(src), "pull", "--ff-only"],
-                                   capture_output=True, text=True)
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
                 if r.returncode != 0:
                     print("  ✗ git pull failed:", (r.stderr or r.stdout).strip()[:300])
                     return 1
@@ -167,7 +167,7 @@ def cmd_update(from_dir: str | None = None, check_only: bool = False,
     return finish(U.install(wheel, info["latest"], lay))
 
 
-def _remove_after_exit(paths: list[Path]) -> None:
+def _remove_after_exit(paths: list[Path], detach=None) -> None:
     """Windows: delete these once this process has exited."""
     import tempfile
     lines = ["@echo off", f"set PID={os.getpid()}",
@@ -179,7 +179,8 @@ def _remove_after_exit(paths: list[Path]) -> None:
     lines.append('del /f /q "%~f0"')
     f = Path(tempfile.gettempdir()) / f"aura-uninstall-{os.getpid()}.cmd"
     f.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
-    from .updater import detach        # Outlives Aura (leaves the launcher's job)
+    if detach is None:
+        from .updater import detach    # Outlives Aura (leaves the launcher's job)
     detach(["cmd", "/c", str(f)])
 
 
@@ -267,6 +268,31 @@ def cmd_uninstall(purge: bool = False, assume_yes: bool = False,
             print("nothing removed.")
             return 1
 
+    # Everything still needed is loaded BEFORE anything is deleted: on Windows
+    # the folders below hold this very program, and a half-deleted package
+    # can't import the rest of itself
+    from .updater import detach
+    try:
+        import keyring
+    except Exception:                              # noqa: BLE001
+        keyring = None
+    running = []
+    for r in (sys.prefix, sys.base_prefix, sys.executable, Path(__file__).parent):
+        try:
+            running.append(Path(r).resolve())
+        except OSError:
+            pass
+
+    def in_use(p: Path) -> bool:
+        """Windows: a folder holding the running Aura is removed after it exits."""
+        if os.name != "nt":
+            return False
+        try:
+            rp = p.resolve()
+        except OSError:
+            return False
+        return any(r == rp or rp in r.parents for r in running)
+
     removed, kept = [], []
     if any(lbl == "background runner" for lbl, _ in present):
         try:
@@ -277,6 +303,9 @@ def cmd_uninstall(purge: bool = False, assume_yes: bool = False,
             pass
     later = []                      # Windows: files in use by this very run
     for lbl, p in present:
+        if in_use(p):
+            later.append((lbl, p))
+            continue
         try:
             if p.is_dir():
                 shutil.rmtree(p)
@@ -291,13 +320,12 @@ def cmd_uninstall(purge: bool = False, assume_yes: bool = False,
     if later:
         # Windows won't delete the running aura.exe / its Python — a small
         # helper removes them a few seconds after Aura closes
-        _remove_after_exit([p for _, p in later])
+        _remove_after_exit([p for _, p in later], detach)
         removed += [f"{lbl}: {p} (removed a few seconds after Aura closes)" for lbl, p in later]
     if purge:
         if keys:
             gone = 0
             try:
-                import keyring
                 for svc, n in keys:
                     try:
                         keyring.delete_password(svc, n)
@@ -311,13 +339,17 @@ def cmd_uninstall(purge: bool = False, assume_yes: bool = False,
                 kept.append(f"{len(keys) - gone} keychain key(s) (could not "
                             "remove — see your OS keychain, service 'aura:…')")
         for d in dict.fromkeys([home_root, data_home]):
+            if d.exists() and in_use(d):
+                _remove_after_exit([d], detach)
+                removed.append(f"data: {d} (removed a few seconds after Aura closes)")
+                continue
             if d.exists():
                 try:
                     shutil.rmtree(d)
                     removed.append(f"data: {d}")
                 except OSError as e:
                     if os.name == "nt":            # Files in use by this run
-                        _remove_after_exit([d])
+                        _remove_after_exit([d], detach)
                         removed.append(f"data: {d} (the rest removed a few seconds "
                                        "after Aura closes)")
                     else:

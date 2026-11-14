@@ -58,14 +58,25 @@ function Native([string]$exe, [string[]]$argv) {
     try { & $exe @argv *>> $Log } finally { $ErrorActionPreference = $old }
     return $LASTEXITCODE
 }
-function Step([string]$t) { $script:Step++; Say ""; Say "[$($script:Step)/$Steps] $t" }
+function Step([string]$t) { $script:Step++; Detail ""; Detail "[$($script:Step)/$Steps] $t" }
+# what the user sees: one calm line per part; everything else goes to the log
+function Detail([string]$t) {
+    if ($script:Started) { try { Add-Content -Path $Log -Value $t -Encoding UTF8 } catch { } }
+}
+$Tick = [string][char]0x2713
+function Ok([string]$t) {
+    Write-Host "  " -NoNewline; Write-Host $Tick -ForegroundColor Green -NoNewline; Write-Host " $t"
+    Detail "ok: $t"
+}
+function Dim([string]$t) { Write-Host "  $t" -ForegroundColor DarkGray; Detail $t }
 function Stop-Install([int]$code) { throw "AURA_STOP:$code" }
 function Card([string]$what, [string]$why = "", [string]$fix = "") {
-    Say ""
-    Say "x $what"
-    if ($why) { Say "  why : $why" }
-    if ($fix) { Say "  fix : $fix" }
-    if ($script:Started) { Say "  log : $Log" }
+    Write-Host ""
+    Write-Host ("  " + [char]0x2717 + " $what") -ForegroundColor Red
+    Detail "x $what"
+    if ($why) { Say "    why: $why" }
+    if ($fix) { Say "    fix: $fix" }
+    if ($script:Started) { Dim "  details: $Log" }
     Stop-Install 1
 }
 function Get-Text([string]$url) {
@@ -132,30 +143,36 @@ function Invoke-AuraInstall {
         try { $HaveUv = ((& $Uv --version) -match " $([regex]::Escape($UvVersion))") } catch { $HaveUv = $false }
     }
 
-    Say "Aura installer - Windows $arch"
-    switch ($Kind) {
-        "folder"  { Say "  from      : $Src" }
-        "wheel"   { Say "  from      : $Wheel" }
-        "release" { Say "  from      : the release $AuraVer - $Base"; Say "              (its package is checked against SHA256SUMS before it is installed)" }
-    }
-    Say "  into      : $AuraHome   (program: bin\ python\ tools\ cache\ releases\ - your data stays apart)"
-    Say "  command   : $BinDir\aura.exe"
-    Say ("  uv        : $UvVersion ($Target)" + $(if ($HaveUv) { " - already here" } else { ", about 20 MB, SHA-256 checked" }))
-    Say "  Python    : $Python, private to Aura (about 30 MB the first time)"
-    Say "  extras    : $(if ($Extras) { $Extras } else { 'none' })   (web browser: pick it in setup - the installed Edge needs no download)"
-    if ($DryRun) { Say ""; Say "dry run - nothing was installed or changed"; Stop-Install 0 }
+    $info = @(
+        "Aura installer - Windows $arch",
+        $(switch ($Kind) { "folder" { "from: $Src" } "wheel" { "from: $Wheel" } default { "from: the release $AuraVer - $Base (checked against SHA256SUMS)" } }),
+        "into: $AuraHome (program: bin\ python\ tools\ cache\ releases\ - your data stays apart)",
+        "command: $BinDir\aura.exe",
+        ("uv: $UvVersion ($Target)" + $(if ($HaveUv) { " - already here" } else { ", about 20 MB, SHA-256 checked" })),
+        "Python: $Python, private to Aura",
+        "extras: $(if ($Extras) { $Extras } else { 'none' })")
+    $title = if ($AuraVer) { "Aura $AuraVer" } else { "Aura" }
+    Write-Host ""
+    Write-Host "  $title" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Installs for you only - no admin needed. About 60 MB."
+    Write-Host "  It adds the 'aura' command, and keeps your data apart from the program." -ForegroundColor DarkGray
+    if ($DryRun) { Write-Host ""; $info | ForEach-Object { Write-Host "  $_" }; Write-Host ""; Write-Host "  dry run - nothing was installed or changed"; Stop-Install 0 }
     if ($Interactive) {
-        $ans = Read-Host "Go ahead? [Y/n]"
-        if ($ans -match '^(n|no)$') { Write-Host "nothing changed."; Stop-Install 1 }
+        Write-Host ""
+        $ans = Read-Host "  Install now? [Y/n]"
+        if ($ans -match '^(n|no)$') { Write-Host "  nothing changed."; Stop-Install 1 }
     }
+    Write-Host ""
     New-Item -ItemType Directory -Force -Path (Join-Path $AuraHome "bin") | Out-Null
     Set-Content -Path $Log -Value "install started $(Get-Date -Format o)" -Encoding UTF8
     $script:Started = $true
+    $info | ForEach-Object { Detail $_ }
 
     # ---------------------------------------------------------------- uv --
     Step "uv $UvVersion"
     if ($HaveUv) {
-        Say "  already here: $Uv"
+        Detail "  already here: $Uv"
     } else {
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aura-uv-" + [Guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $tmp | Out-Null
@@ -172,7 +189,7 @@ function Invoke-AuraInstall {
             $found = Get-ChildItem -Path (Join-Path $tmp "x") -Recurse -Filter "uv.exe" | Select-Object -First 1
             if (-not $found) { Card "uv wasn't in the archive" "" "run again" }
             Copy-Item $found.FullName $Uv -Force
-            Say "  checked (SHA-256) and placed: $Uv"
+            Detail "  checked (SHA-256) and placed: $Uv"
         } finally {
             Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
         }
@@ -192,7 +209,8 @@ function Invoke-AuraInstall {
             Remove-Item -Force $dest -ErrorAction SilentlyContinue
             Card "Aura's package doesn't match the release's checksum" "expected $WheelSum, got $got - it may be damaged or not the real file" "nothing was installed; run again, and if it repeats, don't use this network"
         }
-        Say "  checked (SHA-256): $Wheel"
+        Detail "  checked (SHA-256): $Wheel"
+        Ok "Downloaded and checked"
         $Wheel = $dest
     }
     $env:UV_TOOL_DIR = Join-Path $AuraHome "tools"
@@ -206,24 +224,19 @@ function Invoke-AuraInstall {
     $spec = if ($Extras) { "aura-agent[$Extras] @ $url" } else { "aura-agent @ $url" }
     $code = Native $Uv @("tool", "install", "--force", "--managed-python", "--python", $Python, $spec)
     if ($code -ne 0) { Card "Aura didn't install" "see the log's last lines" "Get-Content '$Log' -Tail 30" }
-    Say "  installed"
+    Ok "Installed"
 
     # -------------------------------------------------------------- PATH --
     Step "the aura command"
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $onPath = (($env:Path + ";" + $userPath) -split ";") -contains $BinDir
+    $newTerminal = $false
     if ($onPath) {
-        Say "  $BinDir is on PATH"
+        Detail "  $BinDir is on PATH"
     } else {
-        Say "  $BinDir isn't on your PATH yet"
-        $add = $Yes
-        if ($Interactive) { $add = -not ((Read-Host "  add it to your user PATH? [Y/n]") -match '^(n|no)$') }
-        if ($add) {
-            if ((Native $Uv @("tool", "update-shell")) -eq 0) { Say "  added - open a new terminal for it to work" }
-            else { Say "  ! couldn't add it - add $BinDir to PATH yourself" }
-        } else {
-            Say "  use the full path for now: $BinDir\aura.exe"
-        }
+        # "Install now?" said it adds the aura command - that yes covers it
+        if ((Native $Uv @("tool", "update-shell")) -eq 0) { $newTerminal = $true; Detail "  added $BinDir to the user PATH" }
+        else { Write-Host "  ! couldn't add $BinDir to PATH - add it yourself" -ForegroundColor Yellow }
     }
 
     # ------------------------------------------------------------ verify --
@@ -232,7 +245,8 @@ function Invoke-AuraInstall {
     $old = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     try { $ver = (& $aura --version 2>$null) } catch { $ver = $null } finally { $ErrorActionPreference = $old }
     if (-not $ver) { Card "the aura command doesn't run" "" "Get-Content '$Log' -Tail 30" }
-    Say "  $ver runs"
+    Detail "  $ver runs"
+    Ok $(if ($newTerminal) { "The 'aura' command is ready (in new terminals)" } else { "The 'aura' command is ready" })
     $layout = [ordered]@{
         method = "uv-tool"; kind = $Kind; source = $(if ($Kind -eq "folder") { $Src } else { $Wheel })
         release_base = $Base; version = $AuraVer; repo = $AuraRepo
@@ -242,18 +256,21 @@ function Invoke-AuraInstall {
         at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     }
     $layout | ConvertTo-Json | Set-Content -Path (Join-Path $AuraHome "install.json") -Encoding UTF8
-    Say "  layout saved: $AuraHome\install.json (aura update / aura uninstall read it)"
+    Detail "  layout saved: $AuraHome\install.json (aura update / aura uninstall read it)"
 
     # ------------------------------------------------------------- setup --
     Step "setup"
     if (-not $NoSetup -and $Interactive) {
         & $aura setup
-        if ($LASTEXITCODE -ne 0) { Say "  setup stopped - say 'aura setup' any time" }
+        if ($LASTEXITCODE -ne 0) { Dim "setup stopped - run 'aura setup' any time" }
     } else {
-        Say "  next: aura setup        (or: aura setup --answers FILE --non-interactive)"
+        Write-Host ""
+        Write-Host "  Next: aura setup"
     }
-    Say ""
-    Say "done. to update, ask Aura (or: aura update) - remove: aura uninstall (your data stays unless --purge)"
+    Write-Host ""
+    if ($newTerminal) { Write-Host "  Open a new terminal, then type:  aura chat" -ForegroundColor Cyan }
+    else { Write-Host "  Start with:  aura chat" -ForegroundColor Cyan }
+    Dim "update: aura update  -  remove: aura uninstall (your data stays unless --purge)"
 }
 
 try {

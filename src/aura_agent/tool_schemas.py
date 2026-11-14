@@ -683,14 +683,18 @@ SCHEMAS["pblock_propose"] = {"type": "function", "function": {
 SCHEMAS["pblock_train"] = {"type": "function", "function": {
     "name": "pblock_train",
     "description": ("Train a pblock the user approved (pblock_propose answered 'Yes, train "
-                    "it') from the template (.yml) and the corpus PLAN you wrote (a .yml "
-                    "spec: craft_truths, dimensions, negations, vocabulary, real_records with "
-                    "a source each). The corpus is built from the plan; its size falls out "
-                    "of it. Follow the guides in the engine's docs folder."),
+                    "it'), following the three waves in CORPUS_TRAINING_METHODOLOGY.md: the "
+                    "real rows first (records: a harvest of the field's own records, or a "
+                    "walk — mutate a real artifact, grade each version by running it), then "
+                    "the corpus PLAN (.yml: 25-30 craft_truths, dimensions, negations, "
+                    "vocabulary). Held to the methodology's gates: 500+ cases, 50+ on each "
+                    "side of every label, 10+ distinct situations; never padded."),
     "parameters": {"type": "object", "properties": {
         "name": {"type": "string"},
         "template": {"type": "string", "description": "path to the .yml template you wrote"},
-        "spec": {"type": "string", "description": "path to the corpus plan (.yml) you wrote"}},
+        "spec": {"type": "string", "description": "path to the corpus plan (.yml) you wrote"},
+        "records": {"type": "string", "description": "JSONL file(s) of real rows from the "
+                    "harvest or walk, comma-separated: {situation, outcome 1|0, source}"}},
         "required": ["name", "template", "spec"]}}}
 
 SCHEMAS["process_input"] = {"type": "function", "function": {
@@ -754,7 +758,7 @@ MAIN_AGENT_TOOLS: list[str] = ['delegate',
  'aura_update']
 
 from .editions import teams_present as _teams_present  # noqa: E402
-if not _teams_present():                    # shipped without Aura Teams: no team tools offered
+if not _teams_present():                    # Shipped without Aura Teams: no team tools offered
     MAIN_AGENT_TOOLS = [t for t in MAIN_AGENT_TOOLS if not t.startswith("team_")]
 
 

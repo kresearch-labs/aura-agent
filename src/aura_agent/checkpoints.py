@@ -45,7 +45,7 @@ def _git_head(root: Path) -> str | None:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=str(root),
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         return r.stdout.strip() or None if r.returncode == 0 else None
     except Exception:
         return None

@@ -75,8 +75,26 @@ class Board:
                 self._fill_asks(st)
             self._bg(load, f"looking at {st.title.lower()}")
 
+    def _expand(self, asks: list) -> list:
+        """A checkbox question becomes one yes/no row per choice here."""
+        out = []
+        for a in asks:
+            if not getattr(a, "multi", ""):
+                out.append(a)
+                continue
+            on = set(str(a.default or "").replace(",", " ").split())
+            off = a.flag_off if a.multi == "flags" else "off"
+            for c in a.choices:
+                v = c[0]
+                label = c[1] if len(c) >= 3 else c[0]
+                hint = (c[2] if len(c) >= 3 else c[1]) or ""
+                key = v if a.multi == "flags" else f"{a.key}::{v}"
+                out.append(self.SS.Ask(key, label, [("on", "yes", hint), (off, "no", "")],
+                                       default="on" if v in on else off, when=a.when))
+        return out
+
     def _fill_asks(self, st) -> None:
-        self.asks[st.id] = st.asks(self.ctx)
+        self.asks[st.id] = self._expand(st.asks(self.ctx))
         cur = self.ans.setdefault(st.id, {})
         for a in self.asks[st.id]:
             cur.setdefault(a.key + "|" + a.when, a.default)
@@ -109,6 +127,10 @@ class Board:
             v = cur.get(a.key + "|" + a.when)
             if v not in (None, ""):
                 answers[a.key] = v
+        for k in [k for k in answers if "::" in k]:     # A checkbox list, put back together
+            base, _, name = k.partition("::")
+            if answers.pop(k) == "on":
+                answers[base] = (answers.get(base, "") + " " + name).strip()
 
         def run():
             changes = st.save(self.ctx, answers)
@@ -315,10 +337,11 @@ class Board:
                 val = cur.get(slot, a.default)
                 row = "    "
                 for c in a.choices:
-                    tag = f"({'•' if c[0] == val else ' '}) {c[0]}"
+                    tag = f"({'•' if c[0] == val else ' '}) {c[1] if len(c) >= 3 else c[0]}"
                     row += (s("accent", tag, bold=True) if c[0] == val else s("dim", tag)) + "  "
                 out.append(cut(row, w))
-                meaning = next((c[1] for c in a.choices if c[0] == val), "")
+                meaning = next(((c[2] if len(c) >= 3 else c[1]) for c in a.choices
+                                if c[0] == val), "")
                 if meaning:
                     for ln in _wrap(meaning, w - 6):
                         out.append("      " + s("faint", ln))

@@ -45,7 +45,7 @@ def run_check(task: dict, root: Path) -> tuple[bool, str]:
                "PYTHONDONTWRITEBYTECODE": "1"}
         try:
             r = subprocess.run([sys.executable, str(script)], cwd=str(root),
-                               capture_output=True, text=True, env=env,
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
                                timeout=CHECK_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return False, f"checker timed out after {CHECK_TIMEOUT_S}s"

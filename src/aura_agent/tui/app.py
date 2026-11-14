@@ -37,7 +37,7 @@ from .term import Terminal
 from .text import cut, pad, width, wrap
 
 RUNNING_OK = {"/status", "/context", "/todos", "/usage", "/help", "/keys",
-              "/kill", "/steer", "/theme", "/debug", "/tools", "/memory",
+              "/kill", "/steer", "/theme", "/debug", "/tools", "/memory", "/display",
               "/rules", "/scope", "/receipt", "/copy", "/agents", "/transcript", "/",
               # switches that take effect at once, on the running task too
               "/assist", "/plan", "/proof"}
@@ -125,6 +125,12 @@ class ChatApp:
             self.focus = _oget("look.focus") == "on"
         except Exception:      # noqa: BLE001
             self.focus = False
+        try:
+            from ..options import get as _oget
+            self.display = str(_oget("look.display") or "simple")
+        except Exception:      # noqa: BLE001
+            self.display = "simple"
+        self.think_all = ""               # This thinking block, whole (shown when it ends)
         self.queued: list[str] = []      # Typed while working: read at the next step
         # messages that reached no task: each runs as its own turn, in the
         # order typed (never glued into one message)
@@ -238,6 +244,14 @@ class ChatApp:
     def say(self, lines: list[str]) -> None:
         self._flush_reads()
         self.region.print_above(lines)
+        if lines:
+            self._last_blank = not lines[-1].strip()
+
+    def _gap(self) -> list[str]:
+        """One blank line between "moments" (thinking, a group of actions,
+        the answer) — never two."""
+        self._flush_reads()
+        return [] if getattr(self, "_last_blank", True) else [""]
 
     def _flush_reads(self) -> None:
         """Several reads in a row show as one row: "Read 4 files"."""
@@ -248,8 +262,9 @@ class ChatApp:
         s, w = self.s, self.cw
         if len(batch) == 1:
             self.region.print_above(cells.tool_cell(batch[0], s, w, workspace=self.workspace))
-            return
-        self.region.print_above(cells.read_group_cell(batch, s, w, self.workspace))
+        else:
+            self.region.print_above(cells.read_group_cell(batch, s, w, self.workspace))
+        self._last_blank = False
 
     def flash(self, text: str, secs: float = 2.5) -> None:
         self.hint, self.hint_until = text, time.monotonic() + secs
@@ -287,6 +302,7 @@ class ChatApp:
             self.files.refresh(force=True)
             threading.Thread(target=self._check_endpoint, daemon=True).start()
             threading.Thread(target=self._check_update, daemon=True).start()
+            threading.Thread(target=self._check_box, daemon=True).start()
             self._title()
             if self.first_task:
                 self.submit(self.first_task)
@@ -403,6 +419,7 @@ class ChatApp:
             self._drag_edge()              # Held still at an edge: keep scrolling
         self.spin_i += 1
         self._cron_check()
+        self._waiting_check()
         self.render()
 
     def set_screen(self, mode: str, save: bool = False, seed: bool = True) -> str:
@@ -515,7 +532,7 @@ class ChatApp:
             + (s("faint", f"  {self.branch}") if self.branch else "")
             + s("faint", f"   {self.workspace}"),
         ]
-        try:                                   # which chat this is: new or resumed
+        try:                                   # Which chat this is: new or resumed
             sess = self.ctx.session
             cid = getattr(sess, "id", "") or ""
             resumed = any(m.get("role") == "user" for m in sess.messages)
@@ -546,6 +563,17 @@ class ChatApp:
                 self.events.put(("notice", "warn",
                                  f"the model server at {_host(p.base_url)} {why} — "
                                  "/connect switches, `aura doctor` checks"))
+        except Exception:      # noqa: BLE001
+            pass
+
+    def _check_box(self) -> None:
+        """The Windows safe box, checked once (cached): what it can't run is
+        said at the start, not found out mid-task."""
+        try:
+            from .. import sandbox_win as SW
+            line = SW.limits()
+            if line:
+                self.events.put(("notice", "info", line))
         except Exception:      # noqa: BLE001
             pass
 
@@ -612,21 +640,42 @@ class ChatApp:
         elif kind == "reasoning" and text:
             if self.think_t0 is None:
                 self.think_t0 = time.monotonic()
+                self.think_all = ""
             self.reasoning = (self.reasoning + text)[-400:]
+            self.think_all = (self.think_all + text)[-20000:]
             self.activity = "thinking"
         elif kind == "tool_call" and isinstance(text, dict):
             verb, _ = cells.tool_title(text.get("name", ""), {})
             self.activity = f"preparing {verb.lower()}"
 
     def _end_thinking(self) -> None:
+        """The model's thinking, in order with what it did: gray italic with a
+        bar, the last lines of it (all of it in 'everything' or Ctrl+O)."""
         if self.think_t0 is None:
             return
         secs = time.monotonic() - self.think_t0
         self.think_t0 = None
-        if secs >= 2:
-            self._flush_answer()
-            self.say([self.s("faint", f"{self.s.g('think')} thought for {cells.fmt_secs(secs)}",
-                             italic=True)])
+        text, self.think_all = self.think_all.strip(), ""
+        s = self.s
+        if not text:
+            if secs >= 2:
+                self._flush_answer()
+                self.say([s("faint", f"{s.g('think')} thought for {cells.fmt_secs(secs)}",
+                            italic=True)])
+            return
+        self._flush_answer()
+        from .text import wrap_text
+        lines = wrap_text(" ".join(text.split()), max(20, self.cw - 4), indent="",
+                          first_indent="")
+        full = self.verbose or self.display == "everything"
+        keep = lines if full else _think_lines(text, max(20, self.cw - 4), 6)
+        head = s("accent", s.g("think")) + " " + s("dim", "Thinking", italic=True) + (
+            s("faint", f"  {cells.fmt_secs(secs)}") if secs >= 2 else "")
+        out = self._gap() + [head]
+        if len(keep) < len(lines):
+            out.append(s("faint", s.g("bar")) + " " + s("faint", "…", italic=True))
+        out += [s("faint", s.g("bar")) + " " + s("dim", ln, italic=True) for ln in keep]
+        self.say(out + [""])
 
     def _emit_answer(self, lines: list[str]) -> None:
         if not lines:
@@ -634,6 +683,7 @@ class ChatApp:
         out = []
         for ln in lines:
             if not self.answer_started and ln.strip():
+                out += self._gap()
                 out.append(self.s("assistant", self.s.g("bullet")) + " " + ln)
                 self.answer_started = True
             else:
@@ -661,13 +711,16 @@ class ChatApp:
         elif kind == "tool_done":
             path = str((d.get("args") or {}).get("path", ""))
             before = self.before.pop(path, None) if d.get("tool") == "write_file" else None
-            verbose = self.verbose or self.state.get("debug_raw", False)
+            verbose = (self.verbose or self.state.get("debug_raw", False)
+                       or self.display == "everything")
             if self.focus and d.get("status") == "ok" and not verbose:
                 pass                 # Focus: no tool rows (the footer counts them)
             elif d.get("tool") in ("tools_find",) and d.get("status") == "ok" and not verbose:
                 pass                 # Aura's own plumbing: not shown (Ctrl+O shows it)
-            elif d.get("tool") in ("read_file", "list_files", "symbols") and \
-                    d.get("status") == "ok" and not verbose:
+            elif d.get("status") == "ok" and not verbose and self.display == "simple" and \
+                    cells.kind_of(d.get("tool", ""), d.get("args") or {}, d.get("blast", "")) \
+                    == "explored" and d.get("tool") not in ("web_crawl", "web_fetch",
+                                                              "web_search", "browser_run"):
                 if not hasattr(self, "read_batch"):
                     self.read_batch = []
                 self.read_batch.append(d)
@@ -694,6 +747,10 @@ class ChatApp:
             self.turn_tokens[1] += ct
             self.chat_tokens[0] += pt
             self.chat_tokens[1] += ct
+            _det = u.get("prompt_tokens_details") or {}
+            _cached = int((_det.get("cached_tokens") if isinstance(_det, dict) else 0)
+                          or u.get("cache_read_input_tokens") or 0)
+            self.chat_cached = getattr(self, "chat_cached", 0) + _cached
             # money, from the server's own counts and the user's price for
             # this model — never guessed (no price → not shown)
             try:
@@ -704,7 +761,14 @@ class ChatApp:
             except Exception:      # noqa: BLE001
                 pass
         elif kind == "ctx_state":
+            _before = int(getattr(self, "ctx_used", 0) or 0)
             self.ctx_used = int(d.get("used") or 0)
+            if _before >= 4000 and self.ctx_used < 0.7 * _before:
+                why = getattr(self, "_ctx_why", "") or "older parts left out of this call"
+                self._ctx_why = ""
+                self.say(cells.notice_cell(
+                    f"context {cells.fmt_tokens(_before)} → {cells.fmt_tokens(self.ctx_used)} "
+                    f"— {why}", s, w, "info"))
             self.ctx_marks = (int(d.get("trim_at") or 0), int(d.get("compact_at") or 0))
             gov = getattr(self.loop, "governor", None)
             at = self.ctx_marks[1]
@@ -733,6 +797,8 @@ class ChatApp:
                 self.say(["  " + s("faint", s.g("queue") + what) + s("dim", cut(txt, w - 46))])
         elif kind == "notice":
             self._flush_answer()
+            if str(d.get("text", "")).startswith("new task —"):
+                self._ctx_why = "earlier tasks in this chat left out (not needed for this one)"
             self.say(cells.notice_cell(str(d.get("text", "")), s, w,
                                        "info" if d.get("calm") else "warn"))
         elif kind == "team":                   # Teams: a team card
@@ -744,7 +810,7 @@ class ChatApp:
             name, det = str(d.get("name", "")), str(d.get("detail", ""))
             if name in ("context overflow", "proof", "compaction", "sources") or (
                     name in ("silent-skip guard", "reasoning-landing")
-                    and (self.verbose or self.state.get("debug_raw"))):    # internal: Ctrl+O
+                    and (self.verbose or self.state.get("debug_raw"))):    # Internal: Ctrl+O
                 self.say(cells.notice_cell(f"{name}: {det}" if det else name,
                                            s, w, "info"))
             elif name == "context trim" and (self.verbose or self.state.get("debug_raw")):
@@ -752,6 +818,8 @@ class ChatApp:
         elif kind == "compaction":
             self.say(cells.notice_cell("older messages summarized to make room "
                                        "(your rules are kept word for word)", s, w, "info"))
+            self._ctx_why = "older messages summarized"
+            self.ctx_used = 0                  # Re-measured now, not at the next reply
         elif kind == "reviewer_error":
             self.say(cells.notice_cell("the second-opinion reviewer failed: "
                                        + cut(str(d.get("error", "")), w - 40), s, w, "warn"))
@@ -860,12 +928,12 @@ class ChatApp:
             return
         self.start_turn(stripped)
 
-    def start_turn(self, text: str) -> None:
+    def start_turn(self, text: str, shown: str | None = None) -> None:
         if self.state.get("killed") and (self.eng / ".kill").exists():
             self.say(cells.notice_cell(f"the stop flag is set — remove "
                                        f"{self.eng / '.kill'} to run tasks", self.s, self.cw))
             return
-        shown = text
+        shown = shown or text
         if "@" in text:
             try:
                 from ..onboard import expand_mentions
@@ -983,6 +1051,14 @@ class ChatApp:
         if problem:
             self.say(cells.notice_cell(str(problem), s, w, "err"))
         self.say(cells.footer_cell(parts, s, ok=not problem and not stopped and not missing))
+        # Plan mode: once the plan is given, back to act on its own — not when
+        # the answer is a question back to you, or the turn stopped or failed
+        if (getattr(self.m, "mode", "act") == "plan" and not problem and not stopped
+                and self.last_answer.strip() and not self.last_answer.rstrip().endswith("?")):
+            self.m.mode = "act"
+            self.say(cells.notice_cell(
+                "plan ready — back to act mode: say go to build it, or tell me what to "
+                "change · /mode plan to keep planning", s, w, "info"))
         self.running = False
         self.activity = ""
         self.reasoning = ""
@@ -1060,6 +1136,19 @@ class ChatApp:
         self.say(cells.notice_cell("stopped: " + (", ".join(stopped) or "nothing was running")
                                    + " — they start again when needed", self.s, self.cw, "ok"))
 
+    def _waiting_check(self) -> None:
+        """A question or approval left open: after 20 s a desktop notification
+        (when the terminal isn't in front) — questions never expire, so they
+        mustn't sit unnoticed.
+        """
+        ov = self.overlay
+        if not ov or ov.get("kind") not in ("approval", "clarify"):
+            return
+        t0 = ov.setdefault("_opened", time.monotonic())
+        if not ov.get("_told") and time.monotonic() - t0 > 20:
+            ov["_told"] = True
+            self._notify("Aura is waiting for your answer")
+
     def _notify(self, text: str) -> None:
         if self.term.focused:
             return
@@ -1097,6 +1186,54 @@ class ChatApp:
             return
         if cmd == "/copy":
             self.copy_last()
+            return
+        if cmd == "/usage":
+            sent, got = self.chat_tokens
+            cached = int(getattr(self, "chat_cached", 0) or 0)
+            used, total = self._ctx_numbers()
+            at = (getattr(self, "ctx_marks", (0, 0)) or (0, 0))[1] or int((total or 0) * 0.8)
+            lines = [f"context now: {cells.fmt_tokens(used)} of {cells.fmt_tokens(total)} "
+                     f"— Aura summarizes older messages at {cells.fmt_tokens(at)}"
+                     if total else "context now: not measured yet",
+                     f"this chat in total: sent {cells.fmt_tokens(sent)} tokens, got "
+                     f"{cells.fmt_tokens(got)} — each call sends the conversation again, so "
+                     "this grows much faster than the context"]
+            if cached:
+                lines.append(f"of what was sent, {cells.fmt_tokens(cached)} was repeated "
+                             "context the server had cached (usually much cheaper)")
+            if self.chat_cost:
+                lines.append(f"cost so far: ${self.chat_cost:.4f}" if self.chat_cost < 1
+                             else f"cost so far: ${self.chat_cost:.2f}")
+            for ln in lines:
+                self.say(cells.notice_cell(ln, self.s, self.cw, "info"))
+            return
+        if cmd == "/display":
+            arg = (line.split()[1:] or [""])
+            want = arg[0].lower()
+            if want == "thinking" and len(arg) > 1 and arg[1].lower() in ("on", "off"):
+                from ..options import set_
+                set_("look.show_thinking", arg[1].lower() == "on")
+                self.say(cells.notice_cell(
+                    "thinking " + arg[1].lower() + " — " + (
+                        "the model's thinking shows as it works" if arg[1].lower() == "on"
+                        else "only what Aura does and its answer show"),
+                    self.s, self.cw, "info"))
+                return
+            if want not in ("simple", "detailed", "everything"):
+                self.say(cells.notice_cell(
+                    f"display: {self.display} · /display simple — one line per action, "
+                    "looking grouped, output hidden when it worked · /display detailed — "
+                    "every action with its output · /display everything — all of it, with "
+                    "tokens · /display thinking on|off · Ctrl+O peeks once", self.s, self.cw,
+                    "info"))
+                return
+            self.display = want
+            try:
+                from ..options import set_
+                set_("look.display", want)
+            except Exception:      # noqa: BLE001
+                pass
+            self.say(cells.notice_cell(f"display: {want} — saved", self.s, self.cw, "info"))
             return
         if cmd == "/focus":
             self.focus = not self.focus
@@ -1181,12 +1318,16 @@ class ChatApp:
         self._hook_llm()
         if self.ctx.extra.pop("session_switched", False):
             self.chat_tokens = [0, 0]
+            self.chat_cached = 0
             self.chat_cost = None
             self.say(self._recap_lines())
         if res.exit:
             self.quit = True
         elif res.task:
-            self.start_turn(res.task)
+            # the chat shows what you typed — a long task Aura wrote for the
+            # model (/persona train, /teams wire) isn't shown as your message
+            shown = res.shown or (res.task if len(res.task) <= 200 else line)
+            self.start_turn(res.task, shown=shown)
 
     def run_shell(self, cmd: str) -> None:
         """!cmd — run it yourself (same safety checks as the agent's
@@ -1449,6 +1590,11 @@ class ChatApp:
         slot["done"].wait()
         return slot["answer"]
 
+    # The task pauses until you answer — the question never expires while
+    # you're at the screen
+    from ..approvals import WAIT_TTL_S as _WAIT
+    approver.ttl_s = _WAIT
+
     def _approval_options(self, req) -> list[tuple[str, str]]:
         opts = [("once", "Yes")]
         if req.get("can_always"):
@@ -1469,11 +1615,12 @@ class ChatApp:
         s = self.s
         verb, target = cells.tool_title(req.get("tool", ""), req.get("args") or {})
         what = f"{verb} {cut(target or str(req.get('target', '')), 60)}".strip()
-        text = {"once": s("ok", f"{s.g('tick')} allowed: ") + s("dim", what),
+        text = {"once": "",
                 "always": s("ok", f"{s.g('tick')} allowed from now on: ") + s("dim", what),
                 "deny": s("warn", f"{s.g('cross')} not allowed: ") + s("dim", what)
                 + (s("faint", f" — “{reason}”") if reason else "")}[answer]
-        self.say(["  " + text])
+        if text:
+            self.say(["  " + text])
         slot["done"].set()
 
     # ------------------------------------------------------ ask / choose --
@@ -2066,10 +2213,15 @@ class ChatApp:
             frame = s.g("bullet") if self.reduce_motion else spin[self.spin_i % len(spin)]
             elapsed = cells.fmt_secs(time.monotonic() - self.turn_t0)
             act = self.activity or "working"
+            if self.overlay is not None and self.overlay.get("kind") in ("approval", "clarify"):
+                act = "paused — waiting for your answer"      # No expiry: it waits for you
             out.append(self._activity_line(frame, act, elapsed))
             if self.reasoning and self.activity == "thinking":
-                tail = " ".join(self.reasoning.split())[-(w - 8):]
-                out.append("  " + s("faint", s.g("think") + " " + tail, italic=True))
+                # live thinking: its last lines, so it never looks frozen
+                live = _think_lines(self.think_all, max(20, w - 6),
+                                    None if self.verbose else 6)   # Ctrl+O: all of it
+                for ln in live:
+                    out.append("  " + s("faint", s.g("bar")) + " " + s("dim", ln, italic=True))
         # 3. queued messages
         for q in self.queued[-3:]:
             out.append("  " + s("faint", s.g("queue") + " waiting to be read: ")
@@ -2475,13 +2627,13 @@ class ChatApp:
             risk = _GRADE_WORDS.get(grade, "")
         except Exception:      # noqa: BLE001
             risk = "can't be undone or reaches outside" if risky else ""
-        out = ["", "  " + s(head_role, s.g("lock") + " ", bold=True)
+        out = ["", "  " + s(head_role, (s.g("lock") if risky else s.g("needs")) + " ", bold=True)
                + s("strong", req.get("heading") or f"Aura wants to {verb.lower()}", bold=True)
                + (s(head_role if risky else "faint", "  " + risk) if risk else "")]
         what = target or str(req.get("target", ""))
         if what:
             for ln in wrap(what, w - 8)[:4]:
-                out.append("    " + s("tool_exec" if tool == "run_command" else "tool_write", ln))
+                out.append("    " + s("dim", ln))
         out.extend("    " + ln for ln in self._change_preview(req))
         det = req.get("detail")
         if det:
@@ -2584,16 +2736,17 @@ class ChatApp:
         if self.turn_steps:
             mx = getattr(getattr(self.loop, "cfg", None), "max_steps", None)
             bits.append(f"step {self.turn_steps}" + (f"/{mx}" if mx else ""))
-        if self.turn_tools:
+        more = self.display != "simple" or self.verbose
+        if self.turn_tools and more:
             bits.append(f"{self.turn_tools} tool{'s' if self.turn_tools != 1 else ''}")
-        if self.turn_tokens[0] or self.turn_tokens[1]:
+        if (self.turn_tokens[0] or self.turn_tokens[1]) and more:
             bits.append(f"{s.g('up')}{cells.fmt_tokens(self.turn_tokens[0])} "
                         f"{s.g('down')}{cells.fmt_tokens(self.turn_tokens[1])}")
         tail = [s("faint", b) for b in bits]
         try:
             b = self.m.budgets
             ceiling = getattr(getattr(self.loop, "settings", None), "token_ceiling", None)                 or getattr(b, "token_ceiling", None)
-            if ceiling:
+            if ceiling and (more or b.tokens_spent >= 0.6 * ceiling):   # Simple: only when near
                 pct = min(100, int(100 * b.tokens_spent / ceiling))
                 fill = max(0, min(10, pct // 10))
                 role = "ok" if pct < 60 else "warn" if pct < 85 else "err"
@@ -2601,7 +2754,7 @@ class ChatApp:
                             + s("faint", s.g("meter_empty") * (10 - fill) + f" {pct}% budget"))
         except Exception:      # noqa: BLE001
             pass
-        tail.append(s("faint", "esc to stop"))
+        tail.append(s("faint", "Ctrl+O details · Esc stop"))
         head = s("accent", frame) + " " + s("strong", cut(act, max(10, w // 3)))
         # too narrow: drop from the middle (budget and esc hint stay last to go)
         while len(tail) > 2 and width(head + "  " + dot.join(tail)) > w - 1:
@@ -2663,22 +2816,17 @@ class ChatApp:
         used, total = self._ctx_numbers()
         ctx_short = ""
         if "context" in want and total:
-            # real numbers first (3.1k/131k), the percent comes from them
-            pct = min(100, 100 * used // total)
-            seg = 10
-            fill = max(0, min(seg, round(seg * pct / 100)))
-            if used and not fill:
-                fill = 1
-            # The colour says how near the summary is (it starts at compact_at,
-            # not at 100%).
+            # How full the window is NOW, toward the point where Aura
+            # summarizes
             at = (getattr(self, "ctx_marks", (0, 0)) or (0, 0))[1] or int(total * 0.8)
-            near = used / at if at else 0
+            seg = 10
+            near = min(1.0, used / at) if at else 0.0
+            fill = max(1 if used else 0, min(seg, round(seg * near)))
             role = "ok" if near < 0.75 else "warn" if near < 0.95 else "err"
             meter = s(role, s.g("meter_full") * fill) + s("faint", s.g("meter_empty") * (seg - fill))
-            ctx_short = s("dim", f"{pct}% ") + meter
-            left.append(("context", s("faint", "ctx ")
-                         + s("dim", f"{cells.fmt_tokens(used)}/{cells.fmt_tokens(total)}")
-                         + s("faint", " · ") + ctx_short))
+            ctx_short = s("faint", "context ") + meter + " " + s("dim", cells.fmt_tokens(used))
+            left.append(("context", ctx_short + s("faint", " · ")
+                         + s("dim", f"{cells.fmt_tokens(max(0, at - used))} until summary")))
         if "team" in want:                         # Aura Teams, when connected
             try:
                 from ..teams_ui import snapshot, status_mark
@@ -2687,9 +2835,10 @@ class ChatApp:
                     left.append(("team", s(mk[1], mk[0])))
             except Exception:      # noqa: BLE001
                 pass
-        if "tokens" in want and (self.chat_tokens[0] or self.chat_tokens[1]):
-            left.append(("tokens", s("faint", f"{s.g('up')}{cells.fmt_tokens(self.chat_tokens[0])} "
-                                              f"{s.g('down')}{cells.fmt_tokens(self.chat_tokens[1])}")))
+        if "tokens" in want and (self.chat_tokens[0] or self.chat_tokens[1]) and \
+                (self.display == "everything" or self.verbose):
+            left.append(("tokens", s("faint", f"this chat: sent {cells.fmt_tokens(self.chat_tokens[0])}"
+                                              f" · got {cells.fmt_tokens(self.chat_tokens[1])}")))
         if "cost" in want and self.chat_cost:
             left.append(("cost", s("faint", f"${self.chat_cost:.4f}" if self.chat_cost < 1
                                    else f"${self.chat_cost:.2f}")))
@@ -2725,7 +2874,7 @@ class ChatApp:
             right = [p for p in right if p[0] != name]
             line = build()
         if not line and ctx_short:
-            left = [(n, s("faint", "ctx ") + ctx_short if n == "context" else t) for n, t in left]
+            left = [(n, ctx_short if n == "context" else t) for n, t in left]   # Narrow: the bar + now
             line = build()
         return cut(line or (" " + sep.join(t for _, t in left)), w - 1)
 
@@ -2803,6 +2952,29 @@ def _edit(ed: Editor, k: Key) -> None:
         ed.undo()
     elif kid == "ctrl+space":
         ed.insert(" ")
+
+
+def _think_lines(text: str, width_: int, most: int | None) -> list[str]:
+    """The model's thinking as readable lines: whole sentences from the end,
+    up to `most` lines (None = all) — never starting mid-sentence."""
+    import re as _re
+    from .text import wrap_text
+    flat = " ".join(str(text).split())
+    if not flat:
+        return []
+    if most is None:
+        return wrap_text(flat, width_, indent="", first_indent="")
+    sents = _re.split(r"(?<=[.!?:])\s+", flat)
+    keep: list[str] = []
+    for snt in reversed(sents):
+        trial = wrap_text(" ".join([snt] + keep), width_, indent="", first_indent="")
+        if len(trial) > most and keep:
+            break
+        keep.insert(0, snt)
+        if len(trial) >= most:
+            break
+    lines = wrap_text(" ".join(keep), width_, indent="", first_indent="")
+    return lines[-most:]
 
 
 def _style_chips(seg: str, s: Style) -> str:

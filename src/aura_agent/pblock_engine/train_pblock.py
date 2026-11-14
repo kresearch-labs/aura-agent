@@ -326,12 +326,15 @@ def main():
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     json.dump(art, open(out_path, "w"), indent=1)
 
+    # Two different "starved" said apart
+    _thin = [k for k, h in (art.get("heads") or {}).items() if h.get("untrained")]
     print(f"""
 === PASS/FAIL ===
 cases:       {len(cases)} (gate {min_cases})   {'PASS' if g_cases else 'FAIL'}
 store size:  {store_mb:.2f}MB (no cap — measurement only)
 retrieval:   {lat_ms:.1f}ms (no gate — measurement only)
-variety:     {len(Y)} trained heads, {len(starved)} starved   {'PASS' if g_var else 'FAIL'}
+variety:     {len(starved)} label(s) with no matching rows   {'PASS' if g_var else 'FAIL'}
+heads:       {len(Y) - len(_thin)} trained, {len(_thin)} with too few examples{(' (' + ', '.join(_thin) + ' — the judge abstains on them)') if _thin else ''}
 artifact:    {out_path}
 store:       {st.path}
 wall time:   {time.time() - t0:.1f}s

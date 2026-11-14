@@ -284,7 +284,7 @@ def run_slice_staged(stage_src: Path, project_root: Path,
         [str(stage_src)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     try:
         r = _sp.run([_sys.executable, "-c", code, str(stage_src)],
-                    capture_output=True, text=True, timeout=900, env=env)
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, env=env)
     except Exception:
         return {"ok": False, "ran": [], "failed": ["staged slice error"]}
     for line in reversed((r.stdout or "").strip().splitlines()):

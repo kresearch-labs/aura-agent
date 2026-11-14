@@ -141,7 +141,14 @@ def _ask(prompt: str, default: str = "") -> str:
 
 
 def _choose(title: str, options: list[tuple[str, str]], default_idx: int = 0) -> str:
-    """Numbered picker. options = [(label, description)]. Returns label."""
+    """Picker: arrow keys on a real terminal, numbers otherwise.
+    options = [(label, description)]. Returns label."""
+    from . import setup_ui as SU
+    if SU.interactive():
+        got = SU.pick_one(title.strip(), [SU.Opt(lab, lab[:1].upper() + lab[1:], d)
+                                          for lab, d in options],
+                          options[default_idx][0])
+        return got if got is not None else options[default_idx][0]
     print(f"\n{title}")
     for i, (label, desc) in enumerate(options, 1):
         mark = "*" if i == default_idx + 1 else " "

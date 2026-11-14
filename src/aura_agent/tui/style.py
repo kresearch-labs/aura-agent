@@ -264,6 +264,7 @@ GLYPHS = {
     "box_v": "│", "ellipsis": "…", "bar_full": "█", "bar_empty": "░", "meter_full": "▰", "meter_empty": "▱",
     "todo": "☐", "doing": "◐", "done": "☑", "lock": "⛨", "queue": "↳",
     "up": "↑", "down": "↓", "sep": "│",
+    "explored": "◇", "changed": "◈", "ran": "▸", "needs": "◆", "bar": "│",
 }
 ASCII_GLYPHS = {
     "bullet": "*", "dot": "-", "arrow": ">", "branch": "`-", "tick": "+",
@@ -272,6 +273,7 @@ ASCII_GLYPHS = {
     "box_v": "|", "ellipsis": "...", "bar_full": "#", "bar_empty": ".", "meter_full": "#", "meter_empty": ".",
     "todo": "[ ]", "doing": "[~]", "done": "[x]", "lock": "#", "queue": ">",
     "up": "^", "down": "v", "sep": "|",
+    "explored": "*", "changed": "+", "ran": ">", "needs": "!", "bar": "|",
 }
 
 

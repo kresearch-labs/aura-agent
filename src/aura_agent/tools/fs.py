@@ -57,9 +57,10 @@ ALLOWED: dict[Path, set] = {}
 EXACT: dict[Path, set] = {}
 
 
-def _resolve_in_root(root: Path, rel: str) -> Path:
+def _resolve_in_root(root: Path, rel: str, read: bool = False) -> Path:
     """Resolve rel against root and refuse any escape, except into a folder
-    the user allowed (outside.py). Returns absolute path."""
+    the user allowed (outside.py) — or, to read, Aura's own program files
+    (its code and guides, never its data). Returns absolute path."""
     if not isinstance(rel, str) or not rel.strip():
         raise Violation("path: empty or non-string path argument")
     p = (root / os.path.expanduser(rel)).resolve()
@@ -68,6 +69,10 @@ def _resolve_in_root(root: Path, rel: str) -> Path:
         from ..outside import inside, never_reason
         if p in EXACT.get(root_r, ()):
             return p                    # Exactly this file was given (a big paste kept aside)
+        if read:
+            from ..outside import aura_program
+            if aura_program(p):
+                return p                # Aura's own guides and code: read-only
         why = never_reason(p)
         if why:
             raise Violation(f"path: '{rel}' can't be used — {why}")
@@ -90,6 +95,9 @@ def _base(root: Path, p: Path) -> Path:
             return f
     if p in EXACT.get(root_r, ()):                 # A file / a drive allowed exactly
         return p if p.is_dir() else p.parent
+    from ..outside import aura_program
+    if aura_program(p):                            # Aura's own guides: shown from the package
+        return Path(__file__).resolve().parent.parent
     return root
 
 
@@ -129,7 +137,7 @@ def _snapshot(root: Path, path: Path, shadow_dir: Path) -> str | None:
 
 # ---------------------------------------------------------------- the tools --
 def list_files(root: Path, args: dict) -> list[str]:
-    sub = _resolve_in_root(root, args.get("path", "."))
+    sub = _resolve_in_root(root, args.get("path", "."), read=True)
     if not sub.exists():
         raise _missing(root, args.get("path", "."), "path")
     exact = sub in EXACT.get(root.resolve(), ())
@@ -173,7 +181,7 @@ def list_files(root: Path, args: dict) -> list[str]:
 
 def read_file(root: Path, args: dict, store: Path | None = None,
               seen: dict | None = None) -> str:
-    p = _resolve_in_root(root, args["path"])
+    p = _resolve_in_root(root, args["path"], read=True)
     # Big tool outputs are saved in the notebook's artifact store, outside the
     # project; their notice says "artifacts/<id>/<name>" — open those there
     # (read-only, jailed to the store), like any other file

@@ -101,7 +101,7 @@ def _task_deliverable_names(task):
     return out
 
 
-QUESTION_ROUNDS = 4     # a question: at most this many rounds of looking, then the answer
+QUESTION_ROUNDS = 4     # A question: at most this many rounds of looking, then the answer
 
 
 def _silent_skip_check(root, since: float = 0.0, chat: str = "",
@@ -1312,6 +1312,16 @@ class AgentLoop:
                           if t["function"]["name"] in ("tools_find", "use_tool")
                           or getattr(self.m.tools.get(t["function"]["name"]), "blast_radius",
                                      None) == _BR.READ]
+            if getattr(self.m, "mode", "act") == "plan" and _tools:
+                # Plan: only what plan mode allows is offered — the model can't
+                # reach for a command or an edit it would only be refused; the
+                # plan tool only while the plan switch is on
+                from ..todo import plan_on as _plan_sw
+                _ok = set(getattr(self.m, "plan_safe", set())) | {"tools_find", "use_tool",
+                                                                   "run_command"}   # Looking only
+                if not (_plan_sw() or getattr(self.m, "plan_forced", False)):
+                    _ok.discard("todo_write")
+                _tools = [t for t in _tools if t["function"]["name"] in _ok]
             try:
                 return (self.llm.chat(_send, tools=_tools,
                                       on_delta=self._delta_printer()),
@@ -1469,6 +1479,15 @@ class AgentLoop:
                                                  Path(getattr(self, "work_dir", None) or self.root))
                         if _rep:
                             raw = raw + "\n" + _rep
+                        # No checker for this language here: a card offers it
+                        # once
+                        from ..lsp_offer import maybe_offer
+                        _off = maybe_offer(
+                            str(args["path"]), Path(getattr(self, "work_dir", None) or self.root),
+                            getattr(self.m, "asker", None),
+                            lambda t: self.on_event("notice", {"text": t, "calm": True}))
+                        if _off:
+                            raw = raw + "\n" + _off
                 except Exception as _swallowed:      # noqa: BLE001
                     log_swallowed("loop.lsp", _swallowed)
             data = (raw if isinstance(raw, bytes)
@@ -1651,7 +1670,7 @@ class AgentLoop:
         ones are sent in full. Once per big task: search the public sources?
         Never for a helper's run. Never stops the work."""
         if getattr(self, "_skills_offered", True) or getattr(self, "parent_run", "") \
-                or getattr(self.m, "turn_readonly", False):        # a question: no offers
+                or getattr(self.m, "turn_readonly", False):        # A question: no offers
             return messages
         try:
             from .. import skill_pick as SP
@@ -2144,6 +2163,7 @@ class AgentLoop:
         kind = "task"
         if not messages:
             self._view = {}
+            self._journal_from = 0                 # A new chat: the project's journal as it is
             from ..legend import with_legend
             session.append("system", content=self.cfg.system_prompt or with_legend(DEFAULT_SYSTEM))
             session.append("user", content=_user, by="user", **({"talk": True} if talk else {}))
@@ -2195,6 +2215,14 @@ class AgentLoop:
                 self._view = {}
             elif not self._reply:
                 self._view, kind = self._task_view(session, task)
+            # Earlier tasks left out → their journal lines are left out too:
+            # only notes written from now on are added to each call. The notes
+            # tool still reads all.
+            try:
+                self._journal_from = (len((self.root / "notes.md").read_text(
+                    encoding="utf-8", errors="replace")) if getattr(self, "_view", None) else 0)
+            except OSError:
+                self._journal_from = 0
             # Re-mark authority on every new turn (last message wins)
             wd_now = self.root            # Ledger: notebook
             from ..taskstate import last_question
@@ -2475,7 +2503,7 @@ class AgentLoop:
                 if _mon.mode == "deep" and not self._deep_told:
                     from ..research import DEEP_INSTRUCTION
                     self._deep_told = True
-                    self.m.plan_forced = True    # deep research plans first, by design
+                    self.m.plan_forced = True    # Deep research plans first, by design
                     session.note(DEEP_INSTRUCTION, step=step)
                     messages = messages + [{"role": "user", "content": aura_note(DEEP_INSTRUCTION)}]
                     self.on_event("notice", {"text": "deep research: plan first, two sources "
@@ -2600,7 +2628,8 @@ class AgentLoop:
         if self.governor:
             j = (self.root / "notes.md")
             if j.exists():
-                inj = Governor.journal_injection(j.read_text(encoding="utf-8", errors="replace"))
+                _jt = j.read_text(encoding="utf-8", errors="replace")
+                inj = Governor.journal_injection(_jt[getattr(self, "_journal_from", 0) or 0:])
                 if inj:
                     messages = messages + [{
                         "role": "system",
@@ -2982,7 +3011,7 @@ class AgentLoop:
         # pending/in_progress at a clean exit is a narrated-but-unexecuted
         # step. Block completion once (budget below) with a mechanical nudge;
         # never invents content, only demands the artifact.
-        skipped = ([] if getattr(self.m, "turn_readonly", False) else   # a question: never
+        skipped = ([] if getattr(self.m, "turn_readonly", False) else   # A question: never
                    _silent_skip_check(self.root, getattr(self, "_run_t0", 0.0),
                                       getattr(self.m, "plan_chat", ""),
                                       getattr(self.m, "plan_forced", False)))

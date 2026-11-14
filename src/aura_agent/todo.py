@@ -151,7 +151,8 @@ def register_todo(mediator, fs_dispatch: dict, root) -> None:
             if not text:
                 return "error: empty text"
             rec = {"record": "todo", "ts": round(time.time(), 3), "chat": chat,
-                   "id": _next_id(_load_history(root, chat)), "text": text,
+                   # Numbered after the steps shown
+                   "id": _next_id(items), "text": text,
                    "status": "pending"}
             _append(root, rec)
             items.append(rec)
@@ -181,7 +182,8 @@ def register_todo(mediator, fs_dispatch: dict, root) -> None:
             return f"error: unknown action '{action}' (add|status|clear_done)"
         return render_checklist(_load(root, chat, force))
 
-    mediator.register(ToolSpec("todo_write", BlastRadius.WRITE, lambda a: None))
+    # Plan-safe: writing the plan is what plan mode is for
+    mediator.register(ToolSpec("todo_write", BlastRadius.WRITE, lambda a: None), plan_safe=True)
     fs_dispatch["todo_write"] = todo_write
 
 

@@ -133,7 +133,7 @@ def check_task(work_dir: Path, task: str, task_md: Path | None = None,
                 # every working script look broken
                 r = subprocess.run(
                     [sys.executable or "python", str(p.name)], cwd=wd,
-                    capture_output=True, text=True, timeout=20)
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
                 if r.returncode != 0:
                     sc.verdicts.append(Verdict(
                         name, "present-broken",

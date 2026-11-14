@@ -9,6 +9,8 @@ was proven and when.
 """
 from __future__ import annotations
 
+import re
+
 import json
 import os
 import platform
@@ -36,6 +38,14 @@ class Ask:
     why: str = ""                # Why the suggestion
     secret: bool = False         # Typed hidden; saved to the key store only
     when: str = ""               # Ask only if this earlier answer key=value holds
+    multi: str = ""              # Checkboxes: "flags" = each choice is a key set on/flag_off
+                                 # "list" = the ticked values, space-separated, into key
+    flag_off: str = "off"        # What an unticked "flags" choice is set to
+    help: str = ""               # One plain line under the question
+    then: Callable | None = None  # Run right after the answer (ctx, ans) -> problem or None
+    skip_to: str = ""            # The answer kept when the user skips after a failure
+    script_only: bool = False    # Only from an answers file (a journey asks it on a terminal)
+    rec: str = ""                # Marked "recommended" — only settings new to most people
 
 
 @dataclass
@@ -58,6 +68,8 @@ class Step:
     save: Callable[[dict, dict], list] = lambda ctx, ans: []
     check: Callable[[dict], Proof] = lambda ctx: Proof(True, "nothing to check")
     run: Callable | None = None  # A step with its own screens (the model)
+    show: Callable[[dict], bool] = lambda ctx: True   # False: nothing to ask here, skipped
+    in_setup: bool = True        # False: only by name (aura setup <id>), never in the walk-through
     means: Callable[[dict], str] = lambda ans: ""
 
 
@@ -223,12 +235,11 @@ def local_checks(prof) -> tuple[list, list]:
 def _model_look(ctx) -> list:
     p = ctx.get("profile")
     if p is None:
-        return [Found("no model chosen yet", "warn")]
+        return []
     from .first_run import was_verified
-    ok = was_verified(ctx.get("setup_name", ""), p)
-    return [Found(f"{p.model} at {p.base_url}", "ok" if ok else "warn"),
-            Found("answered a real message" if ok else "not tested yet",
-                  "ok" if ok else "warn")]
+    if not was_verified(ctx.get("setup_name", ""), p):
+        return []                            # Nothing chosen yet: nothing to show
+    return [Found(f"now: {p.model}", "info")]
 
 
 def _model_run(ctx) -> list:
@@ -308,23 +319,18 @@ def _model_check(ctx) -> Proof:
 # ---------------------------------------------------------- 2 asking --
 def _asking_asks(ctx) -> list:
     sb = _sandbox_status()
-    lvl = Ask("assist.level", "How much should Aura ask before acting?",
-              [("L1", "before every change — you see each step"),
-               ("L2", "only before risky steps: what can't be undone, or reaches "
-                      "outside the project"),
-               ("L3", "never — it works alone" + ("" if sb["contained"] else
-                      "  (no sandbox works on this machine — commands would run "
-                      "with your own rights)"))],
-              default=str(_opt("assist.level")),
-              why="L2 lets it work without stopping you for every edit, and still "
-                  "asks before anything that can't be taken back")
-    start = Ask("assist.start", "The default for every new chat — act or plan? "
-                "(one chat: /mode act|plan)",
-                [("act", "Aura works on what you ask"),
-                 ("plan", "it looks and plans first, and changes nothing until you "
-                          "switch with /mode")],
-                default=str(_opt("assist.start")),
-                why="act is quicker; plan suits a project you don't want touched yet")
+    lvl = Ask("assist.level", "How often should Aura ask before it acts?",
+              [("L1", "L1 · Before every change", "you see and approve each step"),
+               ("L2", "L2 · Only before risky things",
+                "deleting, pushing, anything outside your project"),
+               ("L3", "L3 · Never — it works alone",
+                "" if sb["contained"] else "no safe box here: commands run with your rights")],
+              default=str(_opt("assist.level")), rec="L2")
+    start = Ask("assist.start", "When a new chat starts, Aura should…",
+                [("act", "Act · Do the work", "it starts on what you ask"),
+                 ("plan", "Plan · Plan first", "it looks and plans, and changes nothing until "
+                                               "you say /mode act")],
+                default=str(_opt("assist.start")))
     return [lvl, start]
 
 
@@ -410,40 +416,31 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap"""
 def _safety_look(ctx) -> list:
     from .sandbox_os import describe
     sb = _sandbox_status()
-    out = [Found("on this machine: " + describe(), "info")]
+    out = []
     if sb["contained"]:
-        out.append(Found("a test command could write in the project and could NOT "
-                         "write outside it", "ok"))
-    elif sb["escaped"]:
-        out.append(Found("a test command could write OUTSIDE the project — no file "
-                         "boundary here", "warn"))
+        out.append(Found("Commands run in a safe box — they can only change your "
+                         "project folder", "ok"))
+        out.append(Found("network for commands: off, except the sites you allow "
+                         "(aura scope add <site>)", "detail"))
     else:
-        out.append(Found(f"the sandbox test didn't work: {sb['method']}", "warn"))
+        out.append(Found("Commands run with your own rights — they can change files "
+                         "outside your project", "warn"))
+        out.append(Found("network for commands goes through Aura's filter, but "
+                         "without a safe box a program can ignore it", "detail"))
+    out.append(Found("on this machine: " + describe(), "detail"))
+    if not sb["contained"] and not sb["escaped"]:
+        out.append(Found(f"the sandbox test didn't work: {sb['method']}", "detail"))
     if _apparmor_blocks_bwrap():
-        out.append(Found("bubblewrap is blocked by Ubuntu's AppArmor setting "
-                         "(Landlock is used instead). The narrow fix allows bwrap "
-                         "only, not every program — shown at the end", "warn"))
+        out.append(Found("Ubuntu's AppArmor blocks bubblewrap — a one-line fix is "
+                         "shown at the end", "warn"))
     if ctx.get("nt") and not sb["contained"]:
         from . import sandbox_win as SW
         if SW.installed() and not SW.ready():
-            out.append(Found("Microsoft's process container (MXC) is downloaded, but this "
-                             "Windows can't run it yet — it needs Windows 11 24H2 or newer "
-                             "with the August 2026 update", "warn"))
-        elif SW.offered():
-            out.append(Found("Microsoft's process container (MXC) can give commands a "
-                             f"file/network boundary here, no admin needed — a "
-                             f"{SW.PACKAGE_SIZE / 1e6:.0f} MB download, asked below", "info"))
-        else:
-            out.append(Found("this Windows has no file/network sandbox Aura can use without "
-                             "admin rights; WSL2 or Docker Desktop gives one", "warn"))
-    if sb["contained"]:
-        out.append(Found("network for commands: off, except the sites you allow "
-                         "(aura scope add <site>); a command that needs more asks first",
-                         "info"))
-    else:
-        out.append(Found("network for commands: sent through Aura's filter for the "
-                         "sites you allow — but with no sandbox a program can ignore "
-                         "the filter, so it isn't enforced here", "warn"))
+            out.append(Found("Microsoft's safe box is downloaded, but this Windows needs "
+                             "Windows 11 24H2 with the August 2026 update to run it", "warn"))
+        elif not SW.offered():
+            out.append(Found("WSL2 or Docker Desktop can give commands a safe box here",
+                             "info"))
     return out
 
 
@@ -459,29 +456,48 @@ def _safety_asks(ctx) -> list:
     get = []
     if _mxc_offer(ctx):
         from . import sandbox_win as SW
-        # downloads only on a yes; the default never downloads
-        get = [Ask("sandbox.mxc", f"Download Microsoft's sandbox for commands (MXC "
-                   f"{SW.VERSION}, {SW.PACKAGE_SIZE / 1e6:.0f} MB from nuget.org)?",
-                   [("yes", "download it now — checked against nuget.org's published "
-                            "SHA-512, kept in Aura's folder, nothing installed into Windows"),
-                    ("no", "not now — commands run with your own rights; 'aura setup safety' asks again")],
-                   default="yes",
-                   why="commands then write only in the project and temp folders, and "
-                       "reach only the sites you allow")]
-    return get + [Ask("sandbox.required", "Should commands run only inside the sandbox?",
-                [("on", "yes — a command that can't be sandboxed is refused"),
-                 ("off", "no — it runs, and Aura says plainly it wasn't sandboxed")],
-                default="on" if sb["contained"] else "off",
-                why=("the sandbox works here, so nothing is lost" if sb["contained"]
-                     else "no sandbox works here yet, so 'on' would refuse every command"
-                     + (" — with MXC downloaded above, 'on' is safe to pick" if get else "")))]
+        # downloads only on a yes
+        get = [Ask("sandbox.mxc", "Get a safe box for commands?",
+                   [("yes", "Yes, get it", "commands can only change your project folder"),
+                    ("no", "Not now", "get it later: aura setup safety")],
+                   default="yes", rec="yes", then=_mxc_now, skip_to="no",
+                   help=f"Free, from Microsoft · {SW.PACKAGE_SIZE / 1e6:.0f} MB · "
+                        "nothing is installed into Windows")]
+    if ctx.get("nt") and not sb["contained"]:
+        from . import sandbox_win as SW
+        if SW.installed() and not SW.ready():
+            get.append(Ask("sandbox.winupdate", "Open Windows Update for you?",
+                           [("open", "Yes, open it", "the safe box starts working after "
+                                                     "the update"),
+                            ("no", "Not now", "")], default="open",
+                           then=_windows_update_now, skip_to="no"))
+    if _apparmor_blocks_bwrap():
+        get.append(Ask("sandbox.bwrap", "Allow the sandbox in AppArmor for you?",
+                       [("fix", "Yes, fix it", "lets bubblewrap only — asks for your password"),
+                        ("no", "Not now", "")], default="fix", then=_bwrap_now, skip_to="no"))
+    if not sb["contained"] and not get:
+        # no safe box here and none offered: "only inside it" would refuse
+        # every command — nothing to ask
+        return []
+    req = Ask("sandbox.required", "If a command can't run inside the safe box…",
+              [("off", "Ask me, then run it on my computer",
+                "some installs and tools need more than the box allows"),
+               ("on", "Stop it", "nothing ever runs outside the box")],
+              default="off", rec="off",
+              # Setup doesn't ask; an answers file or settings can set it.
+              script_only=True)
+    if not sb["contained"]:
+        req.when = "sandbox.mxc=yes"         # Only after a yes to the safe box
+    return get + [req]
 
 
 def _safety_save(ctx, ans) -> list:
     out = []
-    if str(ans.get("sandbox.mxc", "")).lower() in ("no", "n", "false"):
+    if str(ans.get("sandbox.mxc", "")).lower() in ("no", "n", "false") \
+            and not ctx.get("_mxc_not_ready"):
         ctx["_sandbox_declined"] = True
-    if str(ans.get("sandbox.mxc", "")).lower() in ("yes", "y", "true"):
+    if str(ans.get("sandbox.mxc", "")).lower() in ("yes", "y", "true") \
+            and not ctx.get("_mxc_done"):
         from . import sandbox_win as SW
         try:
             out.append(SW.get())
@@ -489,6 +505,7 @@ def _safety_save(ctx, ans) -> list:
                 out.append("MXC is saved, but this Windows can't run it yet (it needs "
                            "Windows 11 24H2+ with the August 2026 update) — commands "
                            "keep running as before")
+                ans = dict(ans, **{"sandbox.required": "off"})   # Else every command is refused
         except Exception as e:                       # noqa: BLE001
             out.append(f"MXC wasn't downloaded: {e}")
         _SANDBOX.clear()
@@ -510,6 +527,10 @@ def _safety_check(ctx) -> Proof:
          if _mxc_offer(ctx) else "use WSL2 or start Docker Desktop")
         if ctx.get("nt") else "install bubblewrap, "
         "or use a kernel with Landlock (Linux 5.13+)")
+    if ctx.get("_mxc_not_ready") and not req:
+        return Proof(True, "Microsoft's safe box is downloaded; it starts working after the "
+                     "Windows update (11 24H2, August 2026) — until then Aura says on "
+                     "each command that it isn't in a box")
     if req:
         return Proof(False, "commands must be sandboxed, but no sandbox works here — "
                      "every command would be refused", "a working sandbox", fix)
@@ -547,31 +568,16 @@ def _start_tokens(ctx) -> int:
 def _tools_look(ctx) -> list:
     n = ctx.get("ctx_len")
     start = _start_tokens(ctx)
-    out = [Found(f"a new chat sends about {start:,} tokens of tool descriptions"
-                 + (f" — {start * 100 // n}% of this model's {n:,}-token window" if n
-                    else " (this model's window isn't known yet)"),
-                 "warn" if n and start * 100 // n > 25 else "info"),
-           Found("other groups come when a task needs them (tools_find) and are put "
-                 "away again at a summary", "info")]
-    return out
+    big = bool(n) and start * 100 // n > 25
+    return [Found(f"a new chat sends about {start:,} tokens of tool descriptions"
+                  + (f" — {start * 100 // n}% of this model's {n:,}-token window" if n
+                     else ""), "warn" if big else "detail")]
 
 
 def _tools_asks(ctx) -> list:
-    c = _tool_cost()
-    n = ctx.get("ctx_len")
-    asks = [Ask("tools.mode", "Tool groups:",
-                [("auto", "Aura sends what each task needs (suggested)"),
-                 ("choose", "set each group on / auto / off yourself")],
-                default="auto",
-                why="every tool description is paid for on every call; past ~30–50 "
-                    "tools models pick worse — so only what's needed is sent")]
-    if ctx.get("_tools_choose"):
-        for name, (tok, t) in sorted(c["groups"].items()):
-            share = f", {tok * 100 / n:.1f}% of the window" if n else ""
-            asks.append(Ask(f"tools.{name}", f"{name} — {t.about} (~{tok:,} tokens{share})",
-                            [("auto", "when a task needs it"), ("on", "always"),
-                             ("off", "never")], default=str(_opt(f"tools.{name}"))))
-    return asks
+    # (/tools in a chat stays for anyone who wants it.)
+    return []
+
 
 
 def _tools_save(ctx, ans) -> list:
@@ -588,13 +594,12 @@ def _tools_check(ctx) -> Proof:
     n = ctx.get("ctx_len")
     start = _start_tokens(ctx)
     if not n:
-        return Proof(True, f"about {start:,} tokens of tools at the start (the window "
-                     "size is found on the first chat)")
+        return Proof(True, "")
     pct = start * 100 / n
     if pct > 25:
         return Proof(False, f"the tools take {pct:.0f}% of the window at the start",
                      "room for your work", "aura setup tools  (switch big groups to auto)")
-    return Proof(True, f"the tools take {pct:.1f}% of {n:,} tokens at the start")
+    return Proof(True, "")
 
 
 # ------------------------------------------------------------- 9 you --
@@ -657,10 +662,16 @@ def _you_check(ctx) -> Proof:
 # ------------------------------------------------------------ team ----
 # Aura Teams: the username is asked at install — one question. It is the
 # person's name on the board's work and their git branch name.
+def _team_default() -> str:
+    from .paths import profile_name
+    n = profile_name()
+    return "" if n == "default" else n
+
+
 def _team_asks(ctx) -> list:
     from .teams import load_config
     return [Ask("teams.username", "Your username for team work (blank = later)", [],
-                default=load_config().get("username", ""),
+                default=load_config().get("username", "") or _team_default(),
                 why="Aura Teams: your name on the team board's work and your git "
                     "branch name — letters, digits and dashes")]
 
@@ -813,70 +824,69 @@ def _have_playwright() -> bool:
 def _web_look(ctx) -> list:
     from . import websearch as W
     own = [e.label for e in _own_engines() if e.available()]
-    out = [Found("search services connected: " + (", ".join(own) if own else "none"),
-                 "ok" if own else "info"),
-           Found("open public sources (Wikipedia, arXiv, PubMed, Stack Overflow, "
-                 "GitHub): " + {"on": "allowed", "off": "not used"}.get(
-                     W.consent() or "", "not decided yet"), "info")]
+    out = []
+    if own:
+        out.append(Found("search connected: " + ", ".join(own), "ok"))
+    out.append(Found("free sources: " + {"on": "on", "off": "off"}.get(
+        W.consent() or "", "not decided yet"), "detail"))
     br = installed_browsers()
-    out.append(Found("browsers on this machine: " + (", ".join(br) if br else "none found")
-                     + (" · Aura's browser part is added" if _have_playwright() else
-                        " · Aura's browser part isn't added yet (optional — for pages that "
-                        "need JavaScript)"),
-                     "ok" if br and _have_playwright() else "info"))
+    out.append(Found("browsers here: " + (", ".join(br) if br else "none found")
+                     + (" · Aura's browser part is added" if _have_playwright() else ""),
+                     "detail"))
     return out
 
 
 def _web_asks(ctx) -> list:
     from . import websearch as W
     own = _own_engines()
-    have = [e.name for e in own if e.available()]
-    asks = [Ask("web.service", "Connect a search service?",
-                [("keep", "keep what's connected" + (f" ({', '.join(have)})" if have else
-                                                     " (none)"))]
-                + [(e.name, SEARCH_NOTES.get(e.name, e.label)) for e in own],
-                default="keep",
-                why="open sources answer many questions without one; a service is "
-                    "better for general web search")]
+    have = [e.label for e in own if e.available()]
+    asks = [Ask("web.open_sources", "Search the web without an account?",
+                [("on", "Yes", "your search words go to those sites"),
+                 ("off", "No", "only services you connect")],
+                default=W.consent() or "on",
+                help="DuckDuckGo, Wikipedia, arXiv, PubMed, Stack Overflow, GitHub")]
+    from .setup_journeys import SEARCH_GUIDES
+    asks.append(Ask("web.service", "Connect search services too?",
+                    [(e.name, e.label, getattr(SEARCH_GUIDES.get(e.name), "cost", ""))
+                     for e in own],
+                    default=" ".join(e.name for e in own if e.available()),
+                    multi="list", then=_web_service_now,
+                    help="tick any you have an account for · none ticked = the free sources only"))
     for e in own:
         if e.name == "searxng":
             asks.append(Ask("web.key", "Your SearXNG address (https://…):", [],
-                            when="web.service=searxng"))
+                            when="web.service=searxng", script_only=True))
         else:
             asks.append(Ask("web.key", f"Paste your {e.label} key (hidden):", [],
-                            secret=True, when=f"web.service={e.name}"))
-    asks.append(Ask("web.open_sources", "Search the web with no account (DuckDuckGo, "
-                    "Wikipedia, arXiv, PubMed, Stack Overflow, GitHub)?",
-                    [("on", "yes — the search words go to those sites"),
-                     ("off", "no — only services I connect")],
-                    default=W.consent() or "on",
-                    why="they need no key; what you search is sent to them"))
+                            secret=True, when=f"web.service={e.name}", script_only=True))
     br = installed_browsers()
-    asks.append(Ask("browser.engine", "Which browser should Aura use for web pages?",
-                    [("installed", "the one on this machine"
-                      + (f" ({' / '.join(br)})" if br else " (none found)")
-                      + ("" if _have_playwright() else " — driven by Aura's browser part, "
-                         "added with one command shown at the end")),
-                     ("download", "Playwright's own Chromium (a ~150 MB download, "
-                                  "when you run the command shown)")],
-                    default="installed" if br else "download",
-                    why=("no browser download — it uses the one you have" if br else
-                         "no Chrome or Edge was found")))
+    part = "" if _have_playwright() else "installs Playwright (50 MB) · "
+    asks.append(Ask("browser.engine", "Let Aura open web pages in a browser?",
+                    ([("installed", f"Yes, with {' / '.join(br)}",
+                       part + "for pages that need JavaScript")] if br else [])
+                    + [("download", "Yes, download Chromium for it",
+                        part + "Chromium about 150 MB"),
+                       ("off", "No", "Aura still searches and reads pages without it")],
+                    default="installed" if br else "download", then=_browser_now,
+                    skip_to="off",
+                    help="needed for sites that only work with JavaScript, forms and screenshots"))
     return asks
 
 
 def _web_save(ctx, ans) -> list:
     from . import websearch as W
     out = []
-    svc = ans.get("web.service") or "keep"
+    svcs = [s for s in str(ans.get("web.service") or "").split() if s != "keep"]
+    svc = svcs[0] if len(svcs) == 1 else ""          # A key from an answers file: one service
     key = str(ans.get("web.key") or "").strip()
-    if svc not in ("keep", "") and key:
+    if svc and key:
         eng = next((e for e in _own_engines() if e.name == svc), None)
         if eng is not None and eng.needs:
             from .keystore import put
             put(eng.needs, key)
             out.append(f"{eng.needs}: saved to the key store")
-            ctx["_web_test"] = svc
+            if ctx.get("_web_tested") != svc:        # Tested at the answer already
+                ctx["_web_test"] = svc
     if ans.get("web.open_sources") in ("on", "off"):
         if W.consent() != ans["web.open_sources"]:
             W.set_consent(ans["web.open_sources"])
@@ -959,32 +969,38 @@ def _away_look(ctx) -> list:
     from .gateway import _config
     cfg = _config(None)
     on = [c for c in ("telegram", "discord", "slack", "webhook") if cfg.get(c)]
-    return [Found("messages go to: " + (", ".join(on) if on else
-                                         "nowhere yet (the outbox file only)"),
-                  "ok" if on else "info"),
-            Found("used for: scheduled jobs' results, and approvals while you're away",
-                  "info")]
+    return [Found("messages go to: " + ", ".join(on), "ok")] if on else []
+
+
+def _away_keep_label() -> str:
+    from .gateway import _config
+    cfg = _config(None)
+    on = [c for c in ("telegram", "discord", "slack", "webhook") if cfg.get(c)]
+    return ("Keep " + ", ".join(on)) if on else "Not now"
 
 
 def _away_asks(ctx) -> list:
     return [
-        Ask("away.channel", "Where should Aura send messages when you're away?",
-            [("keep", "keep what's set"), ("telegram", "a Telegram bot (made with @BotFather)"),
-             ("discord", "a Discord channel webhook"),
-             ("slack", "a Slack app's incoming webhook"),
-             ("webhook", "any address that takes a JSON POST")],
-            default="keep"),
+        Ask("away.channel", "Get Aura's messages on your phone?",
+            [("keep", _away_keep_label(), ""),
+             ("telegram", "Telegram", "approve with a tap"),
+             ("discord", "Discord", "messages only"),
+             ("slack", "Slack", "messages only"),
+             ("webhook", "Other (a webhook address)", "")],
+            default="keep", then=_away_now, skip_to="keep",
+            help="results of scheduled work, and Aura's questions while you're away"),
         Ask("away.token", "Paste the bot token from @BotFather (hidden):", [],
-            secret=True, when="away.channel=telegram"),
+            secret=True, when="away.channel=telegram", script_only=True),
         Ask("away.ready", "Now send any message to your bot in Telegram, then press "
-            "Enter (Aura reads the chat it came from):", [], when="away.channel=telegram"),
+            "Enter (Aura reads the chat it came from):", [], when="away.channel=telegram",
+            script_only=True, default="sent"),
         Ask("away.url", "Paste the channel's webhook URL — Discord: channel settings → "
-            "Integrations → Webhooks (hidden):", [], secret=True, when="away.channel=discord"),
+            "Integrations → Webhooks (hidden):", [], secret=True, when="away.channel=discord", script_only=True),
         Ask("away.url", "Slack: make an app at api.slack.com/apps, turn on Incoming "
             "Webhooks, add one to a channel, paste its URL (hidden):", [], secret=True,
-            when="away.channel=slack"),
+            when="away.channel=slack", script_only=True),
         Ask("away.url", "The address to POST to (hidden):", [], secret=True,
-            when="away.channel=webhook"),
+            when="away.channel=webhook", script_only=True),
     ]
 
 
@@ -1019,7 +1035,8 @@ def _away_save(ctx, ans) -> list:
         token = str(ans.get("away.token") or "").strip()
         if not token:
             return ["telegram: no token given — nothing changed"]
-        chat, who = telegram_chat_id(token)
+        chat, who = ((ctx["_tg_chat"], "") if ctx.get("_tg_chat")
+                     else telegram_chat_id(token))
         data["telegram"] = {"token": token, **({"chat_id": chat} if chat else {})}
         out.append("telegram: token saved to the key store" +
                    (f", chat {who or chat}" if chat else f" — chat not found: {who}"))
@@ -1040,6 +1057,11 @@ def _away_save(ctx, ans) -> list:
 
 def _away_check(ctx) -> Proof:
     from .gateway import _config, deliver_message
+    done = ctx.pop("_away_tested", None)
+    if done:                                         # Sent at the answer already
+        ctx.pop("_away_test", None)
+        return Proof(True, f"a test message was sent to {done} during setup — "
+                     "check it arrived")
     ch = ctx.pop("_away_test", None)
     cfg = _config(None)
     chans = [ch] if ch else [c for c in ("telegram", "discord", "slack", "webhook")
@@ -1067,7 +1089,7 @@ LSP_INSTALL = {
     "typescript": "npm install -g typescript-language-server typescript",
     "go": "go install golang.org/x/tools/gopls@latest",
     "rust": "rustup component add rust-analyzer",
-    "c": "clangd — clangd.llvm.org/installation",
+    "c": "clangd (from LLVM)",
 }
 _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build",
               ".aura", "target", ".tox"}
@@ -1094,25 +1116,16 @@ def project_languages(root: Path | None = None, limit: int = 4000) -> list[str]:
 
 
 def _code_look(ctx) -> list:
-    from .lsp import installed
-    langs = ctx.setdefault("_langs", project_languages())
-    have = installed()
-    if not langs:
-        return [Found("no code files in this folder — run `aura setup code` inside a "
-                      "project to check its languages", "info")]
-    return [Found(f"{lang}: " + (f"language server {Path(have[lang]).stem}" if have.get(lang)
-                                 else "no language server installed"),
-                  "ok" if have.get(lang) else "warn") for lang in langs]
+    return []
 
 
 def _code_asks(ctx) -> list:
-    return [Ask("code.lsp", "After an edit, show the language server's errors to Aura?",
-                [("on", "yes — mistakes are caught right after the edit"), ("off", "no")],
-                default="on" if _opt("code.lsp") else "off",
-                why="it catches a broken edit before the next step builds on it"),
-            Ask("assist.suggest_checks", "Suggest extra checks (tests, a repro) when the "
-                "work needs them?", [("on", "yes"), ("off", "no")],
-                default="on" if _opt("assist.suggest_checks") else "off")]
+    return [Ask("code.extras", "Extras for code work",
+                [("code.lsp", "Show code errors right after each edit",
+                  "a broken edit is caught before the next step"),
+                 ("assist.suggest_checks", "Suggest tests when the work needs them", "")],
+                default=" ".join(k for k in ("code.lsp", "assist.suggest_checks") if _opt(k)),
+                multi="flags")]
 
 
 def _code_save(ctx, ans) -> list:
@@ -1126,22 +1139,10 @@ def _code_save(ctx, ans) -> list:
 
 
 def _code_check(ctx) -> Proof:
-    from .lsp import installed
     if not _opt("code.lsp"):
-        return Proof(True, "language-server checks are off")
-    langs = ctx.get("_langs") or project_languages()
-    have = installed()
-    missing = [lang for lang in langs if not have.get(lang)]
-    if not langs:
-        return Proof(True, "no code here to check; servers found: "
-                     + (", ".join(k for k, v in have.items() if v) or "none"))
-    if missing:
-        return Proof(False, "language servers found for: "
-                     + (", ".join(lang for lang in langs if have.get(lang)) or "none"),
-                     "a server for " + ", ".join(missing),
-                     "\n".join(f"{lang}: {LSP_INSTALL.get(lang, '')}" for lang in missing))
-    return Proof(True, "a language server is installed for every language here ("
-                 + ", ".join(langs) + ")")
+        return Proof(True, "errors after each edit: off")
+    return Proof(True, "errors after each edit: on — the first time Aura edits a "
+                 "language with no error checker here, it offers to install one")
 
 
 # ----------------------------------------------------- 6 connections --
@@ -1156,23 +1157,26 @@ def _builtin_skills() -> int:
 
 
 def _conn_look(ctx) -> list:
-    from .mcp_registry import POPULAR, listing
+    from .mcp_registry import listing
     have = listing(_mcp_path())
-    out = [Found("MCP servers added: " + (", ".join(have) if have else "none"),
-                 "ok" if have else "info"),
-           Found(f"{_builtin_skills()} built-in skills (Aura's own, matched to each task)",
-                 "ok")]
-    out += [Found(f"{short} — {p['what']} (by {p['by']}; needs {p['account']})", "info")
-            for short, p in POPULAR.items() if short not in have]
-    out.append(Found("skills from elsewhere aren't added by setup (2026's skill-store "
-                     "attacks hid harm in install steps) — review one, then "
-                     "aura skills add --local <folder>", "info"))
+    out = [Found("connected: " + ", ".join(have), "ok")] if have else []
+    out.append(Found(f"{_builtin_skills()} built-in skills, matched to each task", "detail"))
+    out.append(Found("skills from elsewhere aren't added by setup — review one, then "
+                     "aura skills add --local <folder>", "detail"))
     return out
 
 
 def _conn_asks(ctx) -> list:
-    return [Ask("mcp.add", "Add servers from the list above? Type their short names, "
-                "separated by spaces (blank = none):", [], default="")]
+    from .mcp_registry import POPULAR, listing
+    have = listing(_mcp_path())
+    left = [(short, p) for short, p in POPULAR.items()
+            if short not in have and short != "playwright"]   # Aura's own browser does this
+    if not left:
+        return []
+    return [Ask("mcp.add", "Connect any of these apps?",
+                [(short, short, f"{p['what']} · needs {p['account']}") for short, p in left],
+                default="", multi="list", then=_apps_now,
+                help="Space ticks · Enter with none ticked skips")]
 
 
 def _conn_save(ctx, ans) -> list:
@@ -1329,7 +1333,7 @@ def stop_commands(kind: str) -> list[list[str]]:
 
 def _exec(argv: list[str]):
     import subprocess
-    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    return subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
 
 
 EXEC = _exec            # Tests swap this; nothing else runs OS commands here
@@ -1664,7 +1668,7 @@ def _import_asks(ctx) -> list:
         if d["instructions"] or d["memory"]:
             asks.append(Ask(f"import.{agent}.text", f"{agent}: bring its instructions and "
                             "what it knows about you into Aura's USER.md?",
-                            [("on", "yes"), ("off", "no")], default="on",
+                            [("on", "Yes", ""), ("off", "No", "")], default="on",
                             why="they're yours; lines written for that agent's own tools "
                                 "may not fit Aura — look at USER.md afterwards"))
         if d["mcp"] or d.get("project_mcp"):
@@ -1675,7 +1679,7 @@ def _import_asks(ctx) -> list:
         if d["keys"]:
             asks.append(Ask(f"import.{agent}.keys", f"{agent}: copy its keys "
                             f"({', '.join(d['keys'])}) into Aura's key store?",
-                            [("off", "no"), ("on", "yes")], default="off",
+                            [("off", "No", ""), ("on", "Yes", "")], default="off",
                             why="only if you say so — a key is copied, never shown"))
     return asks
 
@@ -1826,27 +1830,326 @@ def _merged(sid: str, num: int, title: str, later: str, *parts) -> Step:
 
     def check(ctx):
         proofs = [ck(ctx) for _, _, _, ck in parts]
-        return Proof(all(p.ok for p in proofs), " · ".join(p.evidence for p in proofs),
+        return Proof(all(p.ok for p in proofs), " · ".join(p.evidence for p in proofs
+                                                           if p.evidence),
                      "; ".join(p.missing for p in proofs if p.missing),
                      "\n".join(p.fix for p in proofs if p.fix))
     return Step(sid, num, title, False, later, look=look, asks=asks, save=save, check=check)
 
 
+# ------------------------------------------------------------ username --
+def _suggested_username() -> str:
+    try:
+        import getpass
+        raw = getpass.getuser()
+    except Exception:                                # noqa: BLE001
+        raw = ""
+    raw = re.sub(r"[^a-z0-9_-]", "", raw.lower())[:40]
+    return raw or "me"
+
+
+def _profile_fresh(name: str) -> bool:
+    """Nothing saved in this profile yet (a new install)."""
+    from .paths import aura_home, profile_dir
+    d = profile_dir(name)
+    used = d.exists() and any(d.iterdir())
+    if name == "default":
+        eng = aura_home() / "engagement"
+        used = used or (eng.exists() and any(eng.iterdir()))
+        used = used or any((aura_home() / i).exists() for i in
+                           ("profiles.json", "settings.json"))
+    return not used
+
+
+def _username_run(ctx) -> list:
+    from . import setup_ui as SU
+    from .paths import profile_dir, profile_name, set_default_profile, valid_profile_name
+    cur = profile_name()
+    fresh = _profile_fresh(cur)
+    sugg = _suggested_username() if (fresh and cur == "default") else cur
+    name = ""
+    for n in range(3):
+        name = SU.ask_text("Choose your username",
+                           sugg, "Your profile is made with this name — your models, keys, "
+                                 "settings and chats live in it." if n == 0 else
+                                 "Only letters, numbers, - and _ (up to 40).")
+        if valid_profile_name(name):
+            break
+        name = ""
+    if not name or name == cur:
+        SU.line(f"your profile: {cur}", "ok")
+        return [f"profile {cur}"]
+    if not fresh:
+        # the current profile already holds work: the new name is a new,
+        # separate profile; nothing is moved
+        from .workprofiles import create, exists
+        if not exists(name):
+            ok, msg = create(name, copy_models=True)
+            if not ok:
+                SU.line(msg, "fail")
+                return []
+        set_default_profile(name)
+        SU.line(f"your profile: {name}  " + SU.dim(f"(earlier work stays in '{cur}')"), "ok")
+        return [f"profile {name}"]
+    profile_dir(name).mkdir(parents=True, exist_ok=True)
+    set_default_profile(name)
+    SU.line(f"your profile: {name}", "ok")
+    return [f"profile {name}"]
+
+
+def _username_check(ctx) -> Proof:
+    from .paths import profile_dir, profile_name
+    n = profile_name()
+    return Proof(profile_dir(n).exists() or n == "default", f"profile '{n}' is in use")
+
+
+
+# ------------------------------------------------- done at the answer --
+def _mxc_now(ctx, ans):
+    if str(ans.get("sandbox.mxc", "")).lower() != "yes":
+        return None
+    from . import sandbox_win as SW
+    from . import setup_ui as SU
+    try:
+        SW.get(say=lambda s: SU.note(str(s).strip()))
+    except Exception as e:                           # noqa: BLE001
+        import urllib.error
+        if isinstance(e, (urllib.error.URLError, OSError, TimeoutError)) \
+                and not isinstance(e, RuntimeError):
+            return ("couldn't download Microsoft's safe box — nuget.org (Microsoft's "
+                    "package site) may be down, or this computer is offline")
+        return f"couldn't get Microsoft's safe box — {SU.plain_error(e)}"
+    ctx["_mxc_done"] = True
+    _SANDBOX.clear()
+    if not SW.ready():
+        SU.line("downloaded, but this Windows can't run it yet — it needs Windows 11 "
+                "24H2 with the August 2026 update. Commands keep running as before.", "warn")
+        ctx["_mxc_not_ready"] = True
+        ans["sandbox.mxc"] = "no"
+        ans["sandbox.required"] = "off"              # Else every command is refused
+        return None
+    SU.line("Microsoft's safe box is ready", "ok")
+    return None
+
+
+def _web_key_now(ctx, ans):
+    from . import setup_ui as SU
+    svc = ans.get("web.service")
+    key = str(ans.get("web.key") or "").strip()
+    eng = next((e for e in _own_engines() if e.name == svc), None)
+    if eng is None or not key:
+        return None
+    from .keystore import put, remove
+    if eng.needs:
+        put(eng.needs, key)
+    try:
+        hits = eng.run("open source licence", 1)
+    except Exception as e:                           # noqa: BLE001
+        if eng.needs:
+            remove(eng.needs)
+        return f"{eng.label} refused the test search — {SU.plain_error(e)}"
+    ctx["_web_tested"] = svc
+    SU.line(f"{eng.label} works — a test search came back ({len(hits)} result"
+            f"{'' if len(hits) == 1 else 's'})", "ok")
+    return None
+
+
+def _telegram_token_now(ctx, ans):
+    import urllib.error
+    import urllib.request
+    from . import setup_ui as SU
+    token = str(ans.get("away.token") or "").strip()
+    if not token:
+        return None
+    try:
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe",
+                                    timeout=15) as r:
+            me = json.load(r).get("result") or {}
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 404):
+            return "Telegram refused that token — copy it again from @BotFather"
+        return f"Telegram answered with an error (HTTP {e.code})"
+    except Exception as e:                           # noqa: BLE001
+        return f"couldn't reach Telegram — {SU.plain_error(e)}"
+    SU.line(f"the token works — your bot is @{me.get('username', '?')}", "ok")
+    return None
+
+
+def _telegram_chat_now(ctx, ans):
+    from . import setup_ui as SU
+    token = str(ans.get("away.token") or "").strip()
+    if not token:
+        return None
+    chat, who = telegram_chat_id(token)
+    if not chat:
+        return (f"Aura can't see your chat yet — {who}. Send your bot any message "
+                "in Telegram, then try again")
+    SU.line(f"found your chat: {who or chat}", "ok")
+    return None
+
+
+def _webhook_now(ctx, ans):
+    from . import setup_ui as SU
+    from .gateway import _send
+    ch = ans.get("away.channel")
+    url = str(ans.get("away.url") or "").strip()
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        return "that isn't a web address — it starts with https://"
+    try:
+        r = _send(ch, "Aura: messages will arrive here (setup test).", {"url": url})
+    except Exception as e:                           # noqa: BLE001
+        return f"the test message didn't go through — {SU.plain_error(e)}"
+    if not r.get("ok"):
+        return f"the test message didn't go through — {str(r.get('detail', ''))[:140]}"
+    ctx["_away_tested"] = ch
+    SU.line(f"a test message was sent to {ch} — check it arrived", "ok")
+    return None
+
+
+def _mcp_now(ctx, ans):
+    from . import mcp_registry as R
+    from . import setup_ui as SU
+    names = [n.lower() for n in str(ans.get("mcp.add") or "").replace(",", " ").split() if n]
+    have = R.listing(_mcp_path())
+    bad = []
+    for n in names:
+        if n in have or n not in R.POPULAR:
+            continue
+        try:
+            h = R.exact(n)
+        except Exception as e:                       # noqa: BLE001
+            bad.append(f"{n} ({SU.plain_error(e)})")
+            continue
+        if not h or not h.get("spec"):
+            bad.append(f"{n} (no entry Aura can start)")
+            continue
+        R.add(n, h["spec"], _mcp_path())
+        SU.line(f"{n} added", "ok")
+    if bad:
+        return ("couldn't add " + ", ".join(bad) + " — the app list (MCP registry) may "
+                "be down, or this computer is offline")
+    return None
+
+
+# ------------------------------------------------ every option, end to end --
+def _web_service_now(ctx, ans):
+    """Each ticked service that isn't connected yet: guided, key, real test."""
+    from . import setup_journeys as J
+    from . import setup_ui as SU
+    ticked = [s for s in str(ans.get("web.service") or "").split() if s != "keep"]
+    ready = {e.name for e in _own_engines() if e.available()} | ctx.setdefault("_web_ok", set())
+    kept = []
+    for svc in ticked:
+        if svc in ready:
+            kept.append(svc)
+            continue
+        got = J.search_service(svc)
+        if got == J.AGAIN:
+            ans["web.service"] = " ".join(kept)
+            return J.AGAIN
+        if got is None:
+            SU.note(f"{svc}: not connected")
+            continue
+        ctx["_web_ok"].add(svc)
+        ctx["_web_tested"] = svc
+        kept.append(svc)
+    ans["web.service"] = " ".join(kept)
+    return None
+
+
+def _browser_now(ctx, ans):
+    from . import setup_journeys as J
+    return J.browser_part(str(ans.get("browser.engine") or "installed"))
+
+
+def _away_now(ctx, ans):
+    ch = ans.get("away.channel")
+    if ch in (None, "", "keep"):
+        return None
+    from . import setup_journeys as J
+    if ch == "telegram":
+        r = J.telegram()
+        if r == J.AGAIN:
+            return J.AGAIN
+        if not r:
+            ans["away.channel"] = "keep"
+            return None
+        ans["away.token"] = r["token"]
+        ctx["_tg_chat"] = r["chat_id"]
+    else:
+        url = J.webhook(ch)
+        if url == J.AGAIN:
+            return J.AGAIN
+        if not url:
+            ans["away.channel"] = "keep"
+            return None
+        ans["away.url"] = url
+    ctx["_away_tested"] = ch
+    return None
+
+
+def _apps_now(ctx, ans):
+    from . import setup_journeys as J
+    names = [n.lower() for n in str(ans.get("mcp.add") or "").replace(",", " ").split() if n]
+    done = ctx.setdefault("_apps_ok", set())
+    bad = []
+    for n in names:
+        if n in done:
+            continue
+        problem = J.app(n, _mcp_path())
+        if problem:
+            bad.append(problem)
+        else:
+            done.add(n)
+    return "; ".join(bad) if bad else None
+
+
+def _windows_update_now(ctx, ans):
+    if ans.get("sandbox.winupdate") != "open":
+        return None
+    try:
+        os.startfile("ms-settings:windowsupdate")     # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return "couldn't open Windows Update — open Settings → Windows Update"
+    from . import setup_ui as SU
+    SU.note("Windows Update is open. After the update, run aura setup safety again.")
+    return None
+
+
+def _bwrap_now(ctx, ans):
+    if ans.get("sandbox.bwrap") != "fix":
+        return None
+    from . import setup_ui as SU
+    if not SU.run_command("allowing bubblewrap in AppArmor (asks for your password)",
+                          BWRAP_FIX, shell=True):
+        return "the AppArmor change didn't finish — see the lines above"
+    _SANDBOX.clear()
+    if _sandbox_status(refresh=True)["contained"]:
+        SU.line("the sandbox works now — commands can only change your project folder", "ok")
+        return None
+    return "the change went in, but the sandbox test still fails"
+
+
 STEPS: list[Step] = [
+    Step("username", 0, "Your username", True, "aura profile",
+         run=_username_run, check=_username_check),
     Step("import", 0, "Bring over from another agent", False, "aura setup import",
+         show=lambda ctx: bool(_import_asks(ctx)),
          look=_import_look, asks=_import_asks, save=_import_save, check=_import_check),
-    Step("model", 1, "Model", True, "aura setup model", look=_model_look,
+    Step("model", 1, "Your AI model", True, "aura setup model", look=_model_look,
          run=_model_run, check=_model_check),
     Step("asking", 2, "How much Aura asks", True, "aura setup asking  ·  /assist in a chat",
          asks=_asking_asks, save=_asking_save, check=_asking_check),
-    Step("safety", 3, "Safety — where commands run", False, "aura setup safety",
+    Step("safety", 3, "Safety", False, "aura setup safety",
          look=_safety_look, asks=_safety_asks, save=_safety_save, check=_safety_check),
-    _merged("tools", 4, "Tools and code", "aura setup tools  ·  /tools in a chat",
+    _merged("tools", 4, "Code", "aura setup tools  ·  /tools in a chat",
             (_tools_look, _tools_asks, _tools_save, _tools_check),
             (_code_look, _code_asks, _code_save, _code_check)),
     Step("web", 5, "Web and browser", False, "aura setup web",
          look=_web_look, asks=_web_asks, save=_web_save, check=_web_check),
-    Step("connect", 6, "Connections (MCP servers, skills)", False, "aura setup connect  ·  aura mcp",
+    Step("connect", 6, "Apps and connections", False, "aura setup connect  ·  aura mcp",
          look=_conn_look, asks=_conn_asks, save=_conn_save, check=_conn_check),
     Step("away", 7, "Messages when you're away", False, "aura setup away  ·  aura gateway",
          look=_away_look, asks=_away_asks, save=_away_save, check=_away_check),
@@ -1862,6 +2165,8 @@ if not _teams_present():                    # Shipped without Aura Teams
 BY_ID = {s.id: s for s in STEPS}
 # the old step names still open the step they were folded into
 ALIASES = {"code": "tools", "look": "you"}
+# The step stays reachable by name: aura setup you
+BY_ID["you"].in_setup = False
 
 
 # ------------------------------------------------------------ receipt --
@@ -1926,36 +2231,171 @@ def answers_from(file: str | None) -> dict:
 
 
 # ------------------------------------------------------- plain runner --
-def _ask_plain(a: Ask, inp=input, say=print):
-    if a.why:
-        say(f"    suggested: {a.default} — {a.why}")
+def _opts(a: Ask) -> list:
+    from .setup_ui import Opt
+    out = []
+    for c in a.choices:
+        if len(c) >= 3:
+            out.append(Opt(str(c[0]), str(c[1]), str(c[2] or "")))
+        else:
+            out.append(Opt(str(c[0]), str(c[0]), str(c[1] or "")))
+    return out
+
+
+def _ticked(a: Ask) -> set:
+    return {x for x in str(a.default or "").replace(",", " ").split() if x}
+
+
+def _ask_numbered(a: Ask, inp=input, say=print):
+    """The typed form: scripts, pipes, screen readers, tests."""
     if not a.choices:
         try:
             return inp(f"  {a.prompt} ").strip()
         except EOFError:
             return a.default
+    opts = _opts(a)
     say(f"  {a.prompt}")
-    for i, (val, meaning) in enumerate(a.choices, 1):
-        mark = "  (suggested)" if val == a.default else ""
-        say(f"    {i}. {val}" + (f" — {meaning}" if meaning else "") + mark)
+    if a.multi:
+        on = _ticked(a)
+        for i, o in enumerate(opts, 1):
+            say(f"    {i}. [{'x' if o.value in on else ' '}] {o.label}"
+                + (f" — {o.hint}" if o.hint else ""))
+        try:
+            raw = inp("  numbers to switch, separated by spaces (Enter = as shown): ").strip()
+        except EOFError:
+            raw = ""
+        for w in raw.replace(",", " ").split():
+            if w.isdigit() and 1 <= int(w) <= len(opts):
+                on ^= {opts[int(w) - 1].value}
+        return " ".join(o.value for o in opts if o.value in on)
+    for i, o in enumerate(opts, 1):
+        mark = "  (recommended)" if a.rec and o.value == a.rec else ""
+        say(f"    {i}. {o.label}" + (f" — {o.hint}" if o.hint else "") + mark)
     for _ in range(3):
         try:
-            raw = inp(f"  choose 1-{len(a.choices)} [{a.default}]: ").strip()
+            raw = inp(f"  choose 1-{len(opts)} [{a.default}]: ").strip()
         except EOFError:
             raw = ""
         if not raw:
             return a.default
-        if raw.isdigit() and 1 <= int(raw) <= len(a.choices):
-            return a.choices[int(raw) - 1][0]
-        if raw in [c[0] for c in a.choices]:
+        if raw.isdigit() and 1 <= int(raw) <= len(opts):
+            return opts[int(raw) - 1].value
+        if raw in [o.value for o in opts]:
             return raw
         say(f"    '{raw}' isn't one of the choices")
     return a.default
 
 
+def _ask_plain(a: Ask, inp=input, say=print):
+    """Ask one question: arrow keys and checkboxes on a real terminal (the
+    numbered form when setup is driven by a script or a test)."""
+    if inp is not input or say is not print:
+        return _ask_numbered(a, inp, say)
+    from . import setup_ui as SU
+    if not a.choices:
+        return SU.ask_text(a.prompt.rstrip(": "), a.default, a.help)
+    opts = _opts(a)
+    if a.multi:
+        return " ".join(SU.pick_many(a.prompt, opts, _ticked(a), a.help))
+    got = SU.pick_one(a.prompt, opts, a.default, a.help, rec=a.rec)
+    if got is None:                          # Esc: the current answer stays
+        SU.note("  kept: " + next((o.label for o in opts if o.value == a.default), a.default))
+        return a.default
+    return got
+
+
+def _shown(a: Ask, v) -> str:
+    """An answer in the words the user saw."""
+    if a.secret:
+        return "(hidden)"
+    if not a.choices:
+        return str(v)
+    opts = _opts(a)
+    if a.multi:
+        names = [o.label for o in opts if o.value in str(v).split()]
+        return ", ".join(names) if names else "none"
+    return next((o.label for o in opts if o.value == str(v)), str(v))
+
+
+def _cut_q(q: str) -> str:
+    q = q.split(" (")[0].rstrip(":?")
+    return q if len(q) <= 48 else q[:47] + "…"
+
+
+def _ask_one(a: Ask, inp=input, say=print):
+    if a.secret:
+        from .setup_quick import _secret
+        return _secret("  " + a.prompt.rstrip(": "))
+    return _ask_plain(a, inp, say)
+
+
+def _then(a: Ask, v, ctx: dict, ans: dict, inp=input, say=print):
+    """Do what the answer means now (a download, a test); on a failure say
+    why and offer: try again · change the answer · skip."""
+    from . import setup_ui as SU
+    while True:
+        try:
+            problem = a.then(ctx, ans)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            _log_error(f"{a.key}: {e!r}")
+            problem = SU.plain_error(e)
+        if not problem:
+            return ans.get(a.key, v)
+        from .setup_journeys import AGAIN
+        if problem == AGAIN:                         # "Choose another …"
+            v = _ask_one(a, inp, say)
+            ans[a.key] = v
+            if v in ("", None):
+                break
+            continue
+        what = SU.recover(problem)
+        if what == SU.TRY:
+            continue
+        if what == SU.CHANGE:
+            v = _ask_one(a, inp, say)
+            ans[a.key] = v
+            if v in ("", None):
+                break
+            continue
+        break
+    ans[a.key] = a.skip_to
+    return a.skip_to
+
+
+def _log_error(text: str) -> None:
+    """What went wrong, for `aura doctor` and a bug report — the screen gets
+    one plain line."""
+    try:
+        import traceback
+        from .paths import aura_home
+        f = aura_home() / "logs" / "setup-errors.log"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        with f.open("a", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text + "\n"
+                     + traceback.format_exc() + "\n")
+    except Exception:                                # noqa: BLE001
+        pass
+
+
 def run(mode: str = "full", only: list | None = None, answers: dict | None = None,
         interactive: bool = True, dry_run: bool = False, inp=input, say=print) -> int:
-    """Returns an exit code."""
+    """Returns an exit code. Never crashes: a step that fails is said in one
+    plain line and setup goes on; Ctrl+C stops calmly."""
+    try:
+        return _run(mode, only, answers, interactive, dry_run, inp, say)
+    except KeyboardInterrupt:
+        say("")
+        say("  Setup stopped. What was already checked is kept; "
+            "run 'aura setup' to finish.")
+        return 130
+
+
+def _run(mode: str = "full", only: list | None = None, answers: dict | None = None,
+         interactive: bool = True, dry_run: bool = False, inp=input, say=print) -> int:
+    from . import setup_ui as SU
+    styled = inp is input and say is print
     ctx = context()
     try:                                     # The machine, read once
         from .machine import profile
@@ -1964,21 +2404,46 @@ def run(mode: str = "full", only: list | None = None, answers: dict | None = Non
         pass
     answers = dict(answers or {})
     steps = [s for s in STEPS if (only and s.id in only)
-             or (not only and (mode == "full" or s.quick))]
+             or (not only and s.in_setup and (mode == "full" or s.quick))]
+    steps = [s for s in steps if (only and s.id in only) or s.show(ctx)]
     plan: list[tuple[Step, dict]] = []
+    said: dict = {}                      # Step id -> [(question, answer as shown)]
     hidden: set = set()                  # Answers never printed or recorded
     for i, st in enumerate(steps, 1):
-        say("")
-        say(f"[{i}/{len(steps)}] {st.title}   (change it any time: {st.later})")
-        for f in st.look(ctx):
-            say(f"  {'✓' if f.state == 'ok' else '!' if f.state == 'warn' else '·'} {f.text}")
+        try:
+            _one_step(i, st, steps, styled, ctx, answers, interactive, dry_run, plan,
+                      said, hidden, inp, say)
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            _log_error(f"step {st.id}: {e!r}")
+            SU.line(f"{st.title}: something went wrong — {SU.plain_error(e)}", "fail")
+            SU.note(f"skipped — try it again any time: aura setup {st.id}")
+    return _finish(plan, said, hidden, styled, interactive, dry_run, ctx, inp, say)
+
+
+def _one_step(i, st, steps, styled, ctx, answers, interactive, dry_run, plan, said,
+              hidden, inp, say) -> None:
+    from . import setup_ui as SU
+    if True:
+        if styled:
+            SU.header(i, len(steps), st.title, st.later)
+            for f in st.look(ctx):
+                SU.line(f.text, f.state)
+        else:
+            say("")
+            say(f"[{i}/{len(steps)}] {st.title}   (change it any time: {st.later})")
+            for f in st.look(ctx):
+                if f.state == "detail":
+                    continue
+                say(f"  {'✓' if f.state == 'ok' else '!' if f.state == 'warn' else '·'} {f.text}")
         if st.run is not None:
             if not interactive or dry_run:
                 say("  (kept as it is — set it with: " + st.later + ")")
-                continue
+                return
             st.run(ctx)
             plan.append((st, {}))
-            continue
+            return
         ans: dict = {}
         asks = st.asks(ctx)
         k = 0
@@ -1989,50 +2454,123 @@ def run(mode: str = "full", only: list | None = None, answers: dict | None = Non
                 if str(ans.get(wk, "")) != wv:
                     k += 1
                     continue
+            if a.script_only and interactive and a.key not in answers:
+                k += 1
+                continue
             if a.secret:
                 hidden.add(a.key)
             if a.key in answers:
-                ans[a.key] = answers[a.key]
+                v = answers[a.key]
+            elif a.multi == "flags" and any(c[0] in answers for c in a.choices):
+                v = " ".join(c[0] for c in a.choices
+                             if str(answers.get(c[0], "")).lower() in ("on", "yes", "true", "1"))
             elif interactive and a.secret:
                 from .setup_quick import _secret
-                ans[a.key] = _secret("  " + a.prompt.rstrip(": "))
+                v = _secret("  " + a.prompt.rstrip(": "))
             elif interactive:
-                ans[a.key] = _ask_plain(a, inp, say)
+                v = _ask_one(a, inp, say)
             else:
-                ans[a.key] = a.default
-            if a.key == "tools.mode" and ans[a.key] == "choose":
+                v = a.default
+            if interactive and a.then is not None and a.key not in answers \
+                    and v not in ("", None):
+                ans[a.key] = v
+                v = _then(a, v, ctx, ans, inp, say)
+            if a.multi == "flags":           # Each ticked choice is its own setting
+                on = str(v).split()
+                for c in a.choices:
+                    ans[c[0]] = "on" if c[0] in on else a.flag_off
+            else:
+                ans[a.key] = v
+            if v not in ("", None, "skip", "keep"):
+                said.setdefault(st.id, []).append((a.prompt, _shown(a, v)))
+            if a.key == "tools.mode" and v == "choose":
                 ctx["_tools_choose"] = True
                 asks = st.asks(ctx)
             k += 1
         plan.append((st, ans))
+
+
+def _finish(plan, said, hidden, styled, interactive, dry_run, ctx, inp, say) -> int:
+    from . import setup_ui as SU
     # the summary, then one confirm
-    say("")
-    say("what will be saved:")
-    for st, ans in plan:
-        shown = {k: ("(hidden)" if k in hidden else v) for k, v in ans.items()
-                 if k not in ("tools.mode", "away.ready") and v not in ("", None, "skip")}
-        say(f"  {st.title}: " + (", ".join(f"{k}={v}" for k, v in shown.items())
-                                  if shown else "as it is"))
+    if styled:
+        SU.banner("Your choices")
+        for st, ans in plan:
+            got = said.get(st.id) or []
+            print("  " + SU.ui.bold(st.title))
+            if st.run is not None:
+                print("    " + SU.dim("done above"))
+            elif not got:
+                print("    " + SU.dim("as it is"))
+            for q, v in got:
+                print("    " + SU.dim(_cut_q(q)) + "  " + SU.ui.accent(v))
+    else:
+        say("")
+        say("what will be saved:")
+        for st, ans in plan:
+            shown = {k: ("(hidden)" if k in hidden else v) for k, v in ans.items()
+                     if k not in ("tools.mode", "away.ready") and v not in ("", None, "skip")}
+            say(f"  {st.title}: " + (", ".join(f"{k}={v}" for k, v in shown.items())
+                                      if shown else "as it is"))
     if dry_run:
         say("")
         say("dry run — nothing was saved")
         return 0
     if interactive:
-        try:
-            go = inp("save these? [Y/n] ").strip().lower()
-        except EOFError:
-            go = ""
-        if go in ("n", "no"):
+        if styled:
+            go = True                       # Each answer was already chosen
+        else:
+            try:
+                go = inp("save these? [Y/n] ").strip().lower() not in ("n", "no")
+            except EOFError:
+                go = True
+        if not go:
             say("nothing saved.")
             return 1
     ready, total = 0, 0
-    say("")
+    if styled:
+        SU.banner("Checking each part on this computer")
+    else:
+        say("")
     for st, ans in plan:
-        changes = st.save(ctx, ans) if st.run is None else []
-        proof = st.check(ctx)
+        try:
+            changes = st.save(ctx, ans) if st.run is None else []
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:                       # noqa: BLE001
+            _log_error(f"save {st.id}: {e!r}")
+            changes = []
+            proof = Proof(False, f"couldn't be saved — {SU.plain_error(e)}", "",
+                          f"aura setup {st.id}")
+        else:
+            try:
+                proof = st.check(ctx)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:                   # noqa: BLE001
+                _log_error(f"check {st.id}: {e!r}")
+                proof = Proof(False, f"the check couldn't run — {SU.plain_error(e)}", "",
+                              f"aura setup {st.id}")
+        if styled:
+            for c in changes:                        # What saving did, when it matters
+                if isinstance(c, str) and any(w in c.lower() for w in
+                                              ("wasn't", "couldn't", "not found", "failed",
+                                               "refused", "isn't", "nothing changed")):
+                    SU.line(f"{st.title}: {c}", "warn")
         record(st, changes, proof)
         total += 1
         ready += proof.ok
+        if styled:
+            if proof.ok:
+                # a script's run is read as a log: the evidence stays on the line
+                show = SU.details() or not interactive
+                SU.line(st.title + ("  " + SU.dim(proof.evidence) if show else ""), "ok")
+            else:
+                SU.line(f"{st.title} — {proof.evidence}", "warn")
+                if proof.fix:
+                    for n, fl in enumerate(proof.fix.splitlines()):
+                        SU.note(("    fix: " if n == 0 else "         ") + fl)
+            continue
         say(f"  {'✓' if proof.ok else '!'} {st.title}: {proof.evidence}")
         if not proof.ok:
             if proof.missing:
@@ -2042,6 +2580,15 @@ def run(mode: str = "full", only: list | None = None, answers: dict | None = Non
                     say(f"      fix: {line}" if line == proof.fix.splitlines()[0]
                         else f"           {line}")
         say(f"      change it later: {st.later}")
+    if styled:
+        print()
+        if ready == total:
+            SU.line(f"All set — {ready} of {total} ready", "ok")
+        else:
+            SU.line(f"{ready} of {total} ready — the ones marked ⚠ need you", "warn")
+        SU.note("change anything later: aura setup <part>  ·  what each check showed: "
+                "aura setup status")
+        return 0 if ready == total else 2
     say("")
     say(f"{ready}/{total} ready — each one checked on this machine "
         "(the setup receipt keeps what was shown: aura setup status)")

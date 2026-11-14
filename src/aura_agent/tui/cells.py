@@ -39,7 +39,12 @@ def tool_title(name: str, args: dict) -> tuple[str, str]:
     if name == "list_files":
         return "List", p or "."
     if name == "run_command":
-        return "Run", str(a.get("cmd") or a.get("command") or "")
+        cmd = str(a.get("cmd") or a.get("command") or "")
+        look = looking_command(cmd)
+        if look is not None:
+            return "Looked at", ", ".join(look[:3]) + (f" +{len(look) - 3}" if len(look) > 3 else "") \
+                or "this folder"
+        return "Run", cmd
     if name == "run_checks":
         return "Check", str(a.get("kind", "tests"))
     if name in ("web_crawl", "web_fetch"):
@@ -70,6 +75,95 @@ def tool_title(name: str, args: dict) -> tuple[str, str]:
     return name.replace("_", " ").capitalize(), ""
 
 
+# ------------------------------------------------------------------- kinds --
+# Success is one quiet line; a failure shows in full.
+KIND_ROLE = {"explored": "tool_read", "changed": "tool_write", "ran": "tool_exec",
+             "other": "tool_read"}
+KIND_VERB = {"explored": "Explored", "changed": "Changed", "ran": "Ran"}
+VERB_W = 9                     # Action names padded so the details line up
+PAST = {"Run": "Ran", "Write": "Wrote", "Edit": "Edited", "List": "Listed", "Fetch": "Fetched",
+        "Browse": "Browsed", "Check": "Checked", "Remember": "Noted", "Load skill": "Loaded",
+        "Save skill": "Saved"}
+# commands that only look (their first word); a redirect or an install
+# makes it a real command
+_LOOK_CMDS = {"ls", "dir", "cat", "type", "head", "tail", "find", "rg", "grep", "fd",
+              "printf", "echo", "pwd", "wc", "stat", "file", "tree", "which", "where",
+              "less", "more", "du", "df", "env", "printenv", "whoami", "hostname", "uname",
+              "get-childitem", "gci", "get-content", "gc", "select-string", "get-item",
+              "test-path", "get-location", "resolve-path", "jq", "realpath", "readlink",
+              "basename", "dirname", "sort", "uniq", "cut", "awk", "sed", "true", "date"}
+_LOOK_GIT = {"status", "log", "diff", "show", "branch", "remote", "ls-files", "blame", "rev-parse"}
+
+
+def looking_command(cmd: str) -> list[str] | None:
+    """The folders/files a command only looks at, or None when it does more
+    (writes, installs, runs a program)."""
+    c = str(cmd or "").strip()
+    if not c or re.search(r"(?<![<>&0-9])>(?!&)|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b", c):
+        return None
+    targets = []
+    for part in re.split(r"\s*(?:;|&&|\|\||\|)\s*", c):
+        words = part.strip().split()
+        if not words:
+            continue
+        w0 = words[0].lower().rsplit("/", 1)[-1]
+        if w0 == "git" and len(words) > 1 and words[1] in _LOOK_GIT:
+            targets.append("git " + words[1])
+            continue
+        if w0 in ("cd", "set", "export"):
+            continue
+        if w0 not in _LOOK_CMDS:
+            return None
+        if w0 in ("printf", "echo"):
+            continue
+        for x in words[1:]:
+            x = x.strip("'\"")
+            if x.startswith(("/", "~", "./", "../", "$HOME", "%")) or re.match(r"^[A-Za-z]:\\", x):
+                targets.append(x.rstrip(";"))
+    seen = []
+    for x in targets:
+        if x not in seen:
+            seen.append(x)
+    return seen
+
+
+def kind_of(name: str, args: dict | None = None, blast: str = "") -> str:
+    a = args or {}
+    if name in ("edit_file", "write_file", "apply_patch", "multi_edit"):
+        return "changed"
+    if name == "run_command":
+        return "explored" if looking_command(str(a.get("cmd") or a.get("command") or "")) \
+            is not None else "ran"
+    if name in ("run_checks", "browser_run", "delegate"):
+        return "ran"
+    if blast == "write":
+        return "changed"
+    if blast == "execute":
+        return "ran"
+    if blast == "read" or name in ("read_file", "list_files", "symbols", "grep", "glob",
+                                   "search_files", "history_search", "web_search"):
+        return "explored"
+    return "other"
+
+
+def action_head(s: Style, kind: str, verb: str, target: str, w: int, ok: bool = True,
+                status: str = "ok", timing: str = "") -> str:
+    """One action line: icon (its kind's colour, or ✗/▲ when it failed or was
+    refused), the action padded so details line up, the detail in gray."""
+    if ok:
+        icon = s(KIND_ROLE.get(kind, "tool_read"),
+                 s.g({"explored": "explored", "changed": "changed", "ran": "ran"}.get(kind, "bullet")))
+    elif status in ("refused", "blocked", "awaiting_approval"):
+        icon = s("warn", s.g("warn"))
+    else:
+        icon = s("err", s.g("cross"))
+    v = verb[:VERB_W] if len(verb) <= VERB_W else verb
+    head = f"{icon} {s('strong', v.ljust(VERB_W), bold=True)} "
+    if target:
+        head += s("dim", cut(target.replace("\n", " ⏎ "), max(10, w - VERB_W - 14)))
+    return head + timing
+
+
 # ------------------------------------------------------------------- parse --
 def _json(text: str):
     try:
@@ -97,8 +191,20 @@ def command_output(result: str) -> tuple[int | None, str, str]:
             out = inner
             break
     if code is None and d is None and not out:
-        out = result
+        if str(result).lstrip().startswith(("{", "[")):
+            m = re.search(r'\\*"exit_code\\*"\s*:\s*(-?\d+)', result)
+            code = int(m.group(1)) if m else None
+            m = re.search(r'\\*"stdout\\*"\s*:\s*\\*"(.*?)(?:\\*"\s*,\s*\\*"|$)', result, re.S)
+            out = (m.group(1).encode().decode("unicode_escape", "replace")
+                   if m else "")
+            out = out.replace("\\n", "\n")
+        else:
+            out = result
     return code, out, err
+
+
+def _looks_json(text: str) -> bool:
+    return str(text).lstrip().startswith(("{", "[{", '["'))
 
 
 # ------------------------------------------------------------------- cells --
@@ -119,16 +225,26 @@ def tool_cell(ev: dict, s: Style, w: int, verbose: bool = False,
     status = ev.get("status", "ok")
     result = str(ev.get("result") or ev.get("detail") or "")
     verb, target = tool_title(name, args)
-    role = BLAST_ROLE.get(ev.get("blast", "read"), "tool_read")
+    verb = PAST.get(verb, verb)                  # Done things read as done: Ran, Edited
+    kind = kind_of(name, args, ev.get("blast", ""))
+    if name == "run_command" and kind == "explored":
+        look = looking_command(str(args.get("cmd") or args.get("command") or "")) or []
+        if look:
+            target = ", ".join(short_path(x, workspace) for x in look[:3]) + (
+                f" +{len(look) - 3}" if len(look) > 3 else "")
     ok = status == "ok"
-    dot = s(role if ok else ("warn" if status in ("refused", "blocked", "awaiting_approval") else "err"),
-            s.g("bullet"))
     ms = ev.get("duration_ms") or 0
     timing = s("faint", f"  {ms / 1000:.1f}s") if ms >= 1000 else ""
-    head = f"{dot} {s('strong', verb, bold=True)}"
+    code = None
+    if name == "run_command":
+        code, _so, _se = command_output(result)
+        if code not in (None, 0) and kind == "ran":
+            ok = False                           # A failed command shows as a failure
+            # (a look that finds nothing — grep, ls of a missing folder — isn't one)
+    head = action_head(s, kind, verb, "", w, ok, status)
     if target:
         tgt = target if name != "run_command" else target.replace("\n", " ⏎ ")
-        shown = s(role, cut(tgt, max(10, w - width(verb) - 12)))
+        shown = s("dim", cut(tgt, max(10, w - VERB_W - 14)))
         path = str(args.get("path", "") or "")
         if workspace is not None and path and name in (
                 "read_file", "write_file", "edit_file", "list_files"):
@@ -138,7 +254,7 @@ def tool_cell(ev: dict, s: Style, w: int, verbose: bool = False,
                 shown = s.hyperlink((_P(workspace) / path).resolve().as_uri(), shown)
             except (ValueError, OSError):
                 pass
-        head += " " + shown
+        head += shown
     out = [head + timing]
     branch = s("faint", "  " + s.g("branch") + " ")
     pad = "    "
@@ -147,6 +263,17 @@ def tool_cell(ev: dict, s: Style, w: int, verbose: bool = False,
         for i, ln in enumerate(lines):
             out.append((branch if i == 0 else pad) + ln)
 
+    if not ok and name == "run_command" and status == "ok":
+        # the command ran and failed: its own error, in full, in red
+        _c, so, se = command_output(result)
+        text = (se.strip() or so.strip()).splitlines()
+        keep = 40 if verbose else 6
+        body = [s("err", f"exit {code}")] + [s("err", cut(l.expandtabs(4), w - 6))
+                                              for l in text[-keep:]]
+        if len(text) > keep:
+            body.append(s("faint", "(Ctrl+O for all of it)"))
+        detail(body)
+        return out
     if not ok:
         reason = result.strip() or status
         reason = re.sub(r"^(error|refused):\s*", "", reason, flags=re.I)
@@ -177,7 +304,13 @@ def tool_cell(ev: dict, s: Style, w: int, verbose: bool = False,
         code, so, se = command_output(result)
         text = (so + ("\n" + se if se and (code or not so) else "")).rstrip()
         lines = [l for l in text.splitlines()]
-        keep = 40 if verbose else 5
+        if not verbose:
+            # worked: one quiet line — a ✓ and how much it printed (Ctrl+O shows it)
+            n = len(lines)
+            out[0] = head + ("  " + s("ok", s.g("tick")) if kind == "ran" else "") + (
+                s("faint", f"  {n} line{'s' if n != 1 else ''}") if n else "") + timing
+            return out
+        keep = 40
         status_txt = (s("ok", "exit 0") if code == 0 else
                       s("err", f"exit {code}") if code is not None else "")
         shown = lines[-keep:]
@@ -256,26 +389,60 @@ def tool_cell(ev: dict, s: Style, w: int, verbose: bool = False,
         proven = "proven" in result.lower() and "not proven" not in result.lower()
         detail([s("ok" if proven else "warn", "proven" if proven else "recorded — not proven")])
         return out
-    first = result.strip().splitlines()[0] if result.strip() else "done"
-    detail([s("dim", cut(first, w - 6))])
+    if _looks_json(result) and not verbose:
+        return out                                 # Raw data never shows (Ctrl+O does)
+    first = result.strip().splitlines()[0] if result.strip() else ""
+    if first:
+        detail([s("dim", cut(first, w - 6))])
     return out
 
 
+def short_path(p: str, workspace=None) -> str:
+    """A path as people read it: inside the project relative to it, the home
+    folder as ~."""
+    raw = str(p)
+    q = raw.replace("\\", "/")
+    if workspace is not None:
+        ws = str(workspace).replace("\\", "/").rstrip("/")
+        if q == ws:
+            return "."
+        if ws and q.startswith(ws + "/"):
+            return q[len(ws) + 1:]
+    home = os.path.expanduser("~").replace("\\", "/").rstrip("/")
+    if home and (q == home or q.startswith(home + "/")):
+        return "~" + q[len(home):]
+    return raw
+
+
 def read_group_cell(batch: list[dict], s: Style, w: int, workspace=None) -> list[str]:
-    """Several reads in a row as one row with their names."""
+    """Looking in a row — reads, listings, searches, commands that only look —
+    as one Explored line with what was looked at."""
+    def count(n: int, one: str, many: str) -> str:
+        return f"{n} {one if n == 1 else many}"
     files = [b for b in batch if b.get("tool") == "read_file"]
-    other = [b for b in batch if b.get("tool") != "read_file"]
+    lists = [b for b in batch if b.get("tool") == "list_files"]
+    cmds = [b for b in batch if b.get("tool") == "run_command"]
+    other = [b for b in batch if b.get("tool") not in ("read_file", "list_files", "run_command")]
     parts = []
     if files:
-        parts.append(f"{len(files)} file{'s' if len(files) != 1 else ''}")
+        parts.append(count(len(files), "file", "files"))
+    folders = len(lists) + sum(max(1, len(looking_command(str((b.get("args") or {}).get("cmd")
+                                                                   or (b.get("args") or {}).get("command")
+                                                                   or "")) or [])) for b in cmds)
+    if folders:
+        parts.append(count(folders, "folder", "folders"))
     if other:
-        parts.append(f"{len(other)} listing{'s' if len(other) != 1 else ''}")
-    head = (s("tool_read", s.g("bullet")) + " " + s("strong", "Read", bold=True)
-            + " " + s("tool_read", " and ".join(parts)))
+        parts.append(count(len(other), "search", "searches"))
+    head = action_head(s, "explored", "Explored", " · ".join(parts), w)
     names = []
     for b in batch:
         args = b.get("args") or {}
-        p = str(args.get("path") or args.get("query") or ".")
+        if b.get("tool") == "run_command":
+            look = looking_command(str(args.get("cmd") or args.get("command") or "")) or []
+            names.extend(short_path(x, workspace) for x in look) if look else \
+                names.append(tool_title("run_command", args)[1])
+            continue
+        p = str(args.get("path") or args.get("query") or args.get("pattern") or b.get("tool") or ".")
         if b.get("tool") == "read_file":
             n = len([l for l in str(b.get("result", "")).splitlines() if _LINE_NO.match(l)])
             label = s("text", p) + s("faint", f" {n}")
@@ -289,12 +456,13 @@ def read_group_cell(batch: list[dict], s: Style, w: int, workspace=None) -> list
             except (ValueError, OSError):
                 pass
         names.append(label)
-    body = wrap(s("faint", " · ").join(names), w - 6)
+    ind = " " * (VERB_W + 3)                   # Under the detail column
+    body = wrap(s("faint", " · ").join(s("faint", n) for n in names), w - len(ind) - 2)
     out = [head]
-    for i, ln in enumerate(body[:4]):
-        out.append((s("faint", "  " + s.g("branch") + " ") if i == 0 else "    ") + ln)
-    if len(body) > 4:
-        out.append("    " + s("faint", "…"))
+    for ln in body[:2]:
+        out.append(ind + ln)
+    if len(body) > 2:
+        out.append(ind + s("faint", "… (Ctrl+O shows each)"))
     return out
 
 

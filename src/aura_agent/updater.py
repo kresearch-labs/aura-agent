@@ -186,12 +186,12 @@ def install(wheel: Path, version: str, lay: dict | None = None, verb: str = "upd
         return {"ok": True, "now": False,
                 "message": f"Aura {version} is checked and ready — it goes in as soon as Aura closes "
                            "(nothing to run; the next start says how it went)"}
-    r = subprocess.run(_uv_argv(lay, wheel), env=_uv_env(lay), capture_output=True, text=True)
+    r = subprocess.run(_uv_argv(lay, wheel), env=_uv_env(lay), capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode != 0:
         return {"ok": False, "now": True,
                 "message": "the install failed: " + (r.stderr or r.stdout).strip()[-400:]}
     exe = Path(lay.get("bin_dir", "")) / "aura"
-    v = subprocess.run([str(exe), "--version"], capture_output=True, text=True)
+    v = subprocess.run([str(exe), "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if v.returncode != 0:
         return {"ok": False, "now": True, "message": "the new aura command doesn't run: "
                 + (v.stderr or "").strip()[:200]}

@@ -26,6 +26,14 @@ DEFAULT_BANNED = ("rm -rf /", "shutdown", "reboot", "mkfs", "dd if=",
 MAX_STORED = 5_000_000     # Per stream: what the saved copy holds
 # BUILD 1: commands whose effect must be verified from disk afterwards
 # what a blocked network looks like from curl, wget, pip, npm, git, Python, Node
+# what a safe box blocking a command looks like (a file, a library, the
+# network or a folder the box keeps out)
+_BOX_FAIL = re.compile(
+    r"access is denied|permission denied|operation not permitted|read-only file system|"
+    r"dll load failed|importerror: dll|could not load|ssl module|_ssl|certificate verify|"
+    r"winerror 5\b|errno 13|eacces|eperm|cannot open shared object|"
+    r"could not resolve host|temporary failure in name resolution|getaddrinfo|"
+    r"network is unreachable|failed to establish a new connection|no route to host", re.I)
 _NET_FAIL = re.compile(
     r"could not resolve host|temporary failure in name resolution|name or service not known|"
     r"getaddrinfo|network is unreachable|failed to establish a new connection|urlopen error|"
@@ -51,6 +59,44 @@ def _site_ok_for(mediator: Mediator):
     def ok(host: str) -> bool:
         return mediator.scope.contains(host) or             str(host or "").lower() in getattr(mediator, "scope_ok", set())
     return ok
+
+
+def _outside_why(mediator) -> str:
+    from ..sandbox_os import required
+    if required():
+        return ("the user's setting says to stop commands that can't run in the box "
+                "(/settings sandbox.required) — say so, never tell them to run it themselves")
+    if getattr(mediator, "approver", None) is None:
+        return "nobody is here to say yes — say what was blocked and stop"
+    return "the user said no — continue another way, never tell them to run it themselves"
+
+
+def _outside_ok(mediator, args: dict, cmd: str, proc) -> str:
+    """'' or why it may run outside the box now: the user's yes (a card), or
+    L3 (never asks) with 'Stop it' off."""
+    from ..sandbox_os import required
+    if required():
+        return ""
+    if getattr(mediator, "assist", "L2") == "L3":
+        return "L3: runs without asking"
+    approver = getattr(mediator, "approver", None)
+    if approver is None:
+        return ""
+    from ..approvals import ask_operator
+    last = ((proc.stderr or "") + (proc.stdout or "")).strip().splitlines()
+    reason = (last[-1] if last else "blocked")[:160]
+
+    def _always() -> str:
+        mediator.outside_box_ok = True
+        return "commands run on your computer for the rest of this chat"
+    ok, _note = ask_operator(
+        mediator.root, approver, "run_command", dict(args or {}, outside_box=True), "G2",
+        "outside the safe box",
+        f"it was blocked inside the safe box: {reason}",
+        heading="Run this on your computer, outside the safe box?",
+        hint="the box keeps commands to your project; some installs and tools need more",
+        on_always=_always)
+    return "you said yes" if ok else ""
 
 
 def register(mediator: Mediator, dispatch: dict,
@@ -94,11 +140,26 @@ def register(mediator: Mediator, dispatch: dict,
                         allowed=mediator.credential_filter())
             except Exception:
                 _extra_env = None    # Broker must never kill the shell path
-            from ..sandbox import run_sandboxed
-            proc, sandbox_note = run_sandboxed(
-                cmd, Path(_ws or mediator.root), cwd=_cwd,
-                timeout=timeout, network=_network,
-                extra_env=_extra_env, allowed=_site_ok)
+            from ..sandbox import run_outside, run_sandboxed
+            if getattr(mediator, "outside_box_ok", False):
+                # the user said "always" for this chat: their computer, no box
+                proc, sandbox_note = run_outside(cmd, _cwd, timeout, _extra_env)
+            else:
+                proc, sandbox_note = run_sandboxed(
+                    cmd, Path(_ws or mediator.root), cwd=_cwd,
+                    timeout=timeout, network=_network,
+                    extra_env=_extra_env, allowed=_site_ok)
+                _boxed = str(sandbox_note or "").startswith("sandbox:") and \
+                    "UNSANDBOXED" not in str(sandbox_note) and "none on" not in str(sandbox_note)
+                if proc.returncode != 0 and _boxed and \
+                        _BOX_FAIL.search((proc.stdout or "") + (proc.stderr or "")):
+                    _again = _outside_ok(mediator, args, cmd, proc)
+                    if _again:
+                        proc, sandbox_note = run_outside(cmd, _cwd, timeout, _extra_env)
+                        sandbox_note += f" ({_again})"
+                    else:
+                        sandbox_note = (str(sandbox_note) + " — the safe box blocked it and it "
+                                        "can't run outside: " + _outside_why(mediator))
             _refused = []
             if not _network:
                 try:
@@ -143,9 +204,9 @@ def register(mediator: Mediator, dispatch: dict,
             elif proc.returncode != 0 and "network=off" in (sandbox_note or "") \
                     and _NET_FAIL.search(so + se):
                 payload["network_off"] = (
-                    "this command has no network: the sandbox keeps it off. Retrying "
-                    "won't help — use web_search / web_crawl to read the web, or ask "
-                    "the user to allow network for this command (network: true asks them)")
+                    "this command has no network: the sandbox keeps it off. Run it again "
+                    "with network: true — Aura asks the user with a card. Never tell the "
+                    "user to run a command themselves.")
             # BUILD 1 (shell side): mutating commands get a verification
             # directive in the result — the agent must confirm the effect
             # from disk before building on it (Gemini CLI lesson)

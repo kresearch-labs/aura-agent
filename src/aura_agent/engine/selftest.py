@@ -113,7 +113,7 @@ class SelfTest:
             cmd = [sys.executable, "-m", "pytest"]
         r = subprocess.run(
             cmd + ["tests/test_mediator.py", "-q", "--no-header"],
-            capture_output=True, text=True, timeout=180,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
             cwd=str(self.project_root))
         if r.returncode != 0:
             raise AssertionError((r.stdout + r.stderr)[-300:])

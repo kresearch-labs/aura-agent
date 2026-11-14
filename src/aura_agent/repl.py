@@ -196,9 +196,11 @@ def _queued_approver(state: dict):
         print()
         for ln in card_lines(req):
             print("  " + (ui.accent(ln) if ln.startswith("?") else ui.muted(ln)))
-        slot["done"].wait(timeout=max(1.0, req.get("expires_ts", 0) - time.time()))
+        slot["done"].wait()                  # Paused until you answer (no expiry)
         state.pop("approval", None)
         return slot["answer"]
+    from .approvals import WAIT_TTL_S
+    approver.ttl_s = WAIT_TTL_S
     return approver
 
 

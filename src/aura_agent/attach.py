@@ -292,18 +292,18 @@ def clipboard_files() -> list[str]:
         if os.name == "nt":
             r = subprocess.run(["powershell", "-NoProfile", "-Command",
                                 "Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }"],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
         import sys
         if sys.platform == "darwin":
             r = subprocess.run(["osascript", "-e",
                                 "POSIX path of (the clipboard as «class furl»)"],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
             return [r.stdout.strip()] if r.returncode == 0 and r.stdout.strip() else []
         for cmd in (["wl-paste", "--no-newline", "--type", "text/uri-list"],
                     ["xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o"]):
             if shutil.which(cmd[0]):
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
                 if r.returncode == 0:
                     from urllib.parse import unquote, urlparse
                     return [unquote(urlparse(u).path) for u in r.stdout.split()

@@ -41,8 +41,8 @@ def memory() -> tuple[int, int] | None:
             return info.get("MemAvailable", info.get("MemFree", 0)), info.get("MemTotal", 0)
         if sys.platform == "darwin":
             import subprocess
-            total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True))
-            vm = subprocess.check_output(["vm_stat"], text=True)
+            total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, encoding="utf-8", errors="replace"))
+            vm = subprocess.check_output(["vm_stat"], text=True, encoding="utf-8", errors="replace")
             page = 4096
             free = 0
             for ln in vm.splitlines():
@@ -162,7 +162,7 @@ def _ps_procs() -> dict:
     out = {}
     try:
         txt = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss=,comm="], capture_output=True,
-                             text=True, timeout=5).stdout
+                             text=True, encoding="utf-8", errors="replace", timeout=5).stdout
     except (OSError, subprocess.SubprocessError):
         return out
     for ln in txt.splitlines():

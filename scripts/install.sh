@@ -58,14 +58,22 @@ STEPS=5
 
 STARTED=0                     # nothing is written before you say go
 say() { printf '%s\n' "$*"; if [ "$STARTED" = 1 ]; then printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; fi; }
-step() { STEP=$((STEP + 1)); say ""; say "[$STEP/$STEPS] $*"; }
+step() { STEP=$((STEP + 1)); detail ""; detail "[$STEP/$STEPS] $*"; }
+# what the user sees: one calm line per part; everything else goes to the log
+detail() { if [ "$STARTED" = 1 ]; then printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; fi; }
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_OK=$(printf '\033[32m'); C_DIM=$(printf '\033[2m'); C_HEAD=$(printf '\033[36m')
+  C_ERR=$(printf '\033[31m'); C_END=$(printf '\033[0m')
+else C_OK=""; C_DIM=""; C_HEAD=""; C_ERR=""; C_END=""; fi
+ok() { printf '  %s✓%s %s\n' "$C_OK" "$C_END" "$*"; detail "ok: $*"; }
+dim() { printf '  %s%s%s\n' "$C_DIM" "$*" "$C_END"; detail "$*"; }
 card() {
   # what failed, why, what to do — never a bare stack
   say ""
-  say "✗ $1"
-  [ -n "${2:-}" ] && say "  why : $2"
-  [ -n "${3:-}" ] && say "  fix : $3"
-  if [ "$STARTED" = 1 ]; then say "  log : $LOG"; fi
+  printf '  %s✗ %s%s\n' "$C_ERR" "$1" "$C_END"; detail "x $1"
+  [ -n "${2:-}" ] && say "    why: $2"
+  [ -n "${3:-}" ] && say "    fix: $3"
+  if [ "$STARTED" = 1 ]; then dim "details: $LOG"; fi
   exit 1
 }
 # questions: from the terminal itself, so `curl … | sh` can still ask
@@ -161,35 +169,43 @@ UV="$AURA_HOME/bin/uv"
 HAVE_UV=0
 if [ -x "$UV" ] && "$UV" --version 2>/dev/null | grep -q " $UV_VERSION"; then HAVE_UV=1; fi
 
-say "Aura installer — $OS $ARCH"
 case "$KIND" in
-  folder)  say "  from      : $SRC" ;;
-  wheel)   say "  from      : $WHEEL" ;;
-  release) say "  from      : the release $AURA_VER — $BASE"
-           say "              (its package is checked against SHA256SUMS before it is installed)" ;;
+  folder)  FROM_LINE="from: $SRC" ;;
+  wheel)   FROM_LINE="from: $WHEEL" ;;
+  *)       FROM_LINE="from: the release $AURA_VER — $BASE (checked against SHA256SUMS)" ;;
 esac
-say "  into      : $AURA_HOME   (program: bin/ python/ tools/ cache/ releases/ — your data stays apart)"
-say "  command   : $BIN_DIR/aura"
-say "  uv        : $UV_VERSION ($TARGET)$( [ $HAVE_UV = 1 ] && echo ' — already here' || echo ', about 20 MB, SHA-256 checked')"
-say "  Python    : $PYTHON_VERSION, private to Aura (about 30 MB the first time)"
-say "  extras    : ${EXTRAS:-none}   (web browser: pick it in setup — the installed Chrome/Edge needs no download)"
+INFO="Aura installer — $OS $ARCH
+$FROM_LINE
+into: $AURA_HOME (program: bin/ python/ tools/ cache/ releases/ — your data stays apart)
+command: $BIN_DIR/aura
+uv: $UV_VERSION ($TARGET)$( [ $HAVE_UV = 1 ] && echo ' — already here' || echo ', about 20 MB, SHA-256 checked')
+Python: $PYTHON_VERSION, private to Aura
+extras: ${EXTRAS:-none}"
+printf '\n  %sAura%s%s\n\n' "$C_HEAD" "${AURA_VER:+ $AURA_VER}" "$C_END"
+say "  Installs for you only — no admin needed. About 60 MB."
+dim "It adds the 'aura' command, and keeps your data apart from the program."
 if [ "$DRY" = 1 ]; then
   say ""
-  say "dry run — nothing was installed or changed"
+  printf '%s\n' "$INFO" | sed 's/^/  /'
+  say ""
+  say "  dry run — nothing was installed or changed"
   exit 0
 fi
 if [ "$CAN_ASK" != 0 ]; then
-  ask 'Go ahead? [Y/n] ' || { echo "nothing changed."; exit 1; }
+  say ""
+  ask '  Install now? [Y/n] ' || { echo "  nothing changed."; exit 1; }
 fi
+say ""
 mkdir -p "$AURA_HOME/bin"
 : >"$LOG"
 STARTED=1
-say "install started $(date)"
+detail "install started $(date)"
+detail "$INFO"
 
 # -------------------------------------------------------------------- uv --
 step "uv $UV_VERSION"
 if [ "$HAVE_UV" = 1 ]; then
-  say "  already here: $UV"
+  detail "  already here: $UV"
 else
   URL="https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$TARGET.tar.gz"
   $FETCH "$TMP/uv.tar.gz" "$URL" >>"$LOG" 2>&1 || card "couldn't download uv" "$URL" \
@@ -203,7 +219,7 @@ else
   [ -n "$FOUND" ] || card "uv wasn't in the archive" "" "run again"
   cp "$FOUND" "$UV"
   chmod +x "$UV"
-  say "  ✓ checked (SHA-256) and placed: $UV"
+  detail "  checked (SHA-256) and placed: $UV"
 fi
 
 # ------------------------------------------------------- python + aura --
@@ -221,7 +237,8 @@ if [ "$KIND" = release ]; then
       "expected $WHEEL_SUM, got $GOT — it may be damaged or not the real file" \
       "nothing was installed; run again, and if it repeats, don't use this network"
   fi
-  say "  ✓ checked (SHA-256): $WHEEL"
+  detail "  checked (SHA-256): $WHEEL"
+  ok "Downloaded and checked"
   WHEEL="$KEEP/$WHEEL"
 fi
 export UV_TOOL_DIR="$AURA_HOME/tools"
@@ -236,31 +253,29 @@ SPEC="aura-agent[$EXTRAS] @ file://$P_URL"
 [ -n "$EXTRAS" ] || SPEC="aura-agent @ file://$P_URL"
 "$UV" tool install --force --managed-python --python "$PYTHON_VERSION" "$SPEC" >>"$LOG" 2>&1 || \
   card "Aura didn't install" "see the log's last lines" "tail -n 30 '$LOG'"
-say "  ✓ installed"
+ok "Installed"
 
 # ------------------------------------------------------------------ PATH --
 step "the aura command"
+NEW_TERMINAL=0
 case ":$PATH:" in
-  *":$BIN_DIR:"*) say "  ✓ $BIN_DIR is on PATH" ;;
+  *":$BIN_DIR:"*) detail "  $BIN_DIR is on PATH" ;;
   *)
-    say "  $BIN_DIR isn't on PATH yet"
-    add=0
-    if [ "$YES" = 1 ]; then add=1
-    elif [ "$CAN_ASK" != 0 ]; then
-      if ask '  add it to your shell start-up file? [Y/n] '; then add=1; fi
-    fi
-    if [ "$add" = 1 ]; then
-      "$UV" tool update-shell >>"$LOG" 2>&1 && say "  ✓ added — open a new terminal for it to work" \
-        || say "  ! couldn't add it — add $BIN_DIR to PATH yourself"
+    # "Install now?" said it adds the aura command — that yes covers it
+    if [ "$YES" = 1 ] || [ "$CAN_ASK" != 0 ]; then
+      if "$UV" tool update-shell >>"$LOG" 2>&1; then NEW_TERMINAL=1; detail "  added $BIN_DIR to the shell start-up file"
+      else say "  ! couldn't add $BIN_DIR to PATH — add it yourself"; fi
     else
-      say "  use the full path for now: $BIN_DIR/aura"
+      detail "  $BIN_DIR isn't on PATH (no terminal to ask)"
     fi ;;
 esac
 
 # ---------------------------------------------------------------- verify --
 step "check"
 VER=$("$BIN_DIR/aura" --version 2>>"$LOG") || card "the aura command doesn't run" "" "tail -n 30 '$LOG'"
-say "  ✓ $VER runs"
+detail "  $VER runs"
+if [ "$NEW_TERMINAL" = 1 ]; then ok "The 'aura' command is ready (in new terminals)"
+else ok "The 'aura' command is ready"; fi
 NOW=$(date +%s)
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 if [ "$KIND" = folder ]; then SOURCE="$SRC"; else SOURCE="$WHEEL"; fi
@@ -272,15 +287,18 @@ cat >"$AURA_HOME/install.json" <<EOF
  "tool_dir": "$(esc "$UV_TOOL_DIR")", "python_dir": "$(esc "$UV_PYTHON_INSTALL_DIR")",
  "cache_dir": "$(esc "$UV_CACHE_DIR")", "at": $NOW}
 EOF
-say "  layout saved: $AURA_HOME/install.json (aura update / aura uninstall read it)"
+detail "  layout saved: $AURA_HOME/install.json (aura update / aura uninstall read it)"
 
 # ----------------------------------------------------------------- setup --
 step "setup"
 if [ "$SETUP" = 1 ] && [ "$CAN_ASK" != 0 ]; then
-  if [ "$CAN_ASK" = 1 ]; then "$BIN_DIR/aura" setup || say "  setup stopped — say 'aura setup' any time"
-  else "$BIN_DIR/aura" setup </dev/tty || say "  setup stopped — say 'aura setup' any time"; fi
+  if [ "$CAN_ASK" = 1 ]; then "$BIN_DIR/aura" setup || dim "setup stopped — run 'aura setup' any time"
+  else "$BIN_DIR/aura" setup </dev/tty || dim "setup stopped — run 'aura setup' any time"; fi
 else
-  say "  next: aura setup        (or: aura setup --answers FILE --non-interactive)"
+  say ""
+  say "  Next: aura setup"
 fi
 say ""
-say "done. to update, ask Aura (or: aura update) · remove: aura uninstall (your data stays unless --purge)"
+if [ "$NEW_TERMINAL" = 1 ]; then printf '  %sOpen a new terminal, then type:  aura chat%s\n' "$C_HEAD" "$C_END"
+else printf '  %sStart with:  aura chat%s\n' "$C_HEAD" "$C_END"; fi
+dim "update: aura update  ·  remove: aura uninstall (your data stays unless --purge)"

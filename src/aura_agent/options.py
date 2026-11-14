@@ -310,10 +310,10 @@ def _options() -> list[Option]:
                       "bool", False, getter=g, setter=s,
                       words=("goal", "task", "drift", "remind", "anchor", "intent", "recite")))
     g, s = _plain("sandbox.required")
-    out.append(Option("sandbox.required", "Safety", "require a sandbox for commands",
-                      "refuse to run a command when this machine has no OS sandbox for it "
-                      "(macOS Seatbelt, Linux bubblewrap/Landlock, Docker); off = run it "
-                      "and say plainly that it wasn't sandboxed",
+    out.append(Option("sandbox.required", "Safety", "strict safe box (for servers and teams)",
+                      "on = a command the safe box can't run is refused — installs, dev "
+                      "servers and running what you build can stop working; for locked-down "
+                      "machines. off (normal) = Aura asks you, then runs it on your computer",
                       "bool", False, getter=g, setter=s, user_only=True,
                       words=("sandbox", "isolation", "contain", "jail", "landlock", "seatbelt")))
     # Install stage step 2: the level a NEW chat starts at — a chat keeps its
@@ -401,6 +401,15 @@ def _options() -> list[Option]:
                       "— /sidebar switches it",
                       "choice", "on", choices=("on", "off"), getter=g, setter=s,
                       words=("sidebar", "side panel", "panel", "info")))
+    g, s = _plain("look.display")
+    out.append(Option("look.display", "Look", "how much the chat shows",
+                      "simple = one line per action, looking grouped, output hidden when it "
+                      "worked (errors in full) · detailed = every action with its output · "
+                      "everything = all of it, with tokens — /display switches it, Ctrl+O "
+                      "peeks once",
+                      "choice", "simple", choices=("simple", "detailed", "everything"),
+                      getter=g, setter=s,
+                      words=("display", "verbose", "details", "output", "compact", "simple")))
     g, s = _plain("look.focus")
     out.append(Option("look.focus", "Look", "focus view",
                       "on = your message, the answer and one line per task; tool rows are "

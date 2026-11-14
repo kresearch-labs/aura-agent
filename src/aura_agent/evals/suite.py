@@ -100,7 +100,7 @@ assert shout("x") == "X", "existing function must keep working"
         "files": {"greet.py": "import argparse\n\np = argparse.ArgumentParser()\np.add_argument('name')\na = p.parse_args()\nprint(f'Hello, {a.name}')\n"},
         "check": """
 import subprocess, sys
-run = lambda *a: subprocess.run([sys.executable, "greet.py", *a], capture_output=True, text=True).stdout.strip()
+run = lambda *a: subprocess.run([sys.executable, "greet.py", *a], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 assert run("Ana") == "Hello, Ana", run("Ana")
 assert run("Ana", "--shout") == "HELLO, ANA", run("Ana", "--shout")
 """,
@@ -160,7 +160,7 @@ src = pathlib.Path("shop.py").read_text() + pathlib.Path("main.py").read_text()
 assert "calc_total" not in src, "old name still present"
 from shop import compute_total
 assert compute_total([1, 2]) == 3
-out = subprocess.run([sys.executable, "main.py"], capture_output=True, text=True)
+out = subprocess.run([sys.executable, "main.py"], capture_output=True, text=True, encoding="utf-8", errors="replace")
 assert out.stdout.strip() == "6", out.stdout + out.stderr
 """,
         "solution": {"shop.py": "def compute_total(prices):\n    return sum(prices)\n",
@@ -225,14 +225,14 @@ t = pathlib.Path("tests/test_slug.py")
 assert t.exists(), "tests/test_slug.py missing"
 src = t.read_text()
 assert src.count("assert") >= 3 and "slugify" in src, "needs at least 3 asserts on slugify"
-env_ok = subprocess.run([sys.executable, str(t)], capture_output=True, text=True, cwd=".",
+env_ok = subprocess.run([sys.executable, str(t)], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=".",
                         env={**__import__("os").environ, "PYTHONPATH": "."})
 assert env_ok.returncode == 0, "tests fail on the correct code: " + env_ok.stderr[-300:]
 # a broken slugify must make the tests fail (they really test something)
 shutil.copy("slug.py", "slug.bak")
 pathlib.Path("slug.py").write_text("def slugify(s):\\n    return s\\n")
 try:
-    bad = subprocess.run([sys.executable, str(t)], capture_output=True, text=True,
+    bad = subprocess.run([sys.executable, str(t)], capture_output=True, text=True, encoding="utf-8", errors="replace",
                          env={**__import__("os").environ, "PYTHONPATH": "."})
     assert bad.returncode != 0, "tests still pass when slugify is broken"
 finally:

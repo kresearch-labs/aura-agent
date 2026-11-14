@@ -332,7 +332,13 @@ def failure_of(name: str, result: dict) -> str | None:
         err = str(result.get("error") or result.get("status"))[:600]
         # Aura's own refusals (loop guard, the user's "no") already say
         # what to do — they aren't failures to diagnose
-        if err.startswith(("blocked by the loop guard", "skipped —", "assist:")):
+        if err.startswith(("blocked by the loop guard", "skipped —", "assist:",
+                           "plan mode:", "mode: tool", "discuss mode:")):
+            return None
+        # a place Aura never lets a chat use: Aura's own block, said with its
+        # reason — not the model's failure (never blamed on the model)
+        if err.startswith("path: '") and ("can't be used" in err
+                                         or "wasn't allowed" in err):
             return None
         return err
     if name == "run_checks":

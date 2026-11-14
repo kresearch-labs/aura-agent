@@ -16,7 +16,7 @@ from ..eventlog import log_swallowed
 def _git(repo: str | Path, *args: str, timeout: int = 60) -> tuple[int, str, str]:
     try:
         r = subprocess.run(["git", *args], cwd=str(repo),
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
         return r.returncode, r.stdout, r.stderr
     except Exception as e:
         return 1, "", repr(e)

@@ -61,7 +61,10 @@ def spec_for(srv: dict) -> dict | None:
             return {"command": "uvx", "args": [f"{ident}=={ver}" if ver else ident],
                     **({"env": env} if env else {})}
         if kind == "oci" and ident:
-            return {"command": "docker", "args": ["run", "-i", "--rm", ident],
+            # `-e NAME` hands the value Aura sets for docker on into the
+            # container — without it the server inside never gets its token
+            pass_env = [a for n in env for a in ("-e", n)]
+            return {"command": "docker", "args": ["run", "-i", "--rm", *pass_env, ident],
                     **({"env": env} if env else {})}
     for r in srv.get("remotes") or []:
         if r.get("url") and (r.get("type") or "").lower() in ("streamable-http", "http", "sse"):

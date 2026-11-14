@@ -497,7 +497,7 @@ def cmd_run(args) -> int:
             phase(data.get("name", ""), data.get("detail", ""))
         elif kind == "steer":
             _ui.info(f"steer: step {data.get('step', '?')}")
-        elif kind == "notice":            # a calm notice is information, not a warning
+        elif kind == "notice":            # A calm notice is information, not a warning
             (_ui.info if data.get("calm") else _ui.warn)(str(data.get("text", "")))
         elif kind == "team":                    # Teams: the line, plain
             _ui.info("team: " + str(data.get("text", ""))
@@ -741,16 +741,19 @@ def cmd_setup(args) -> int:
     words = list(getattr(args, "mode", None) or [])
     if not words and _os.environ.get("AURA_SETUP_LANE"):
         words = [_os.environ["AURA_SETUP_LANE"].strip().lower()]
-    if not words and _sys_tty():                       # Ask which setup, like Hermes
-        print("Which setup?")
-        print("  1. quick — the model and how much Aura asks (about a minute)")
-        print("  2. full  — every part, one step at a time (model, safety, tools, web, "
-              "connections, messages, you)")
+    if not words and _sys_tty():
+        from . import setup_ui as SU
+        SU.banner("Set up Aura", "↑↓ and Enter to choose")
         try:
-            pick = input("choose 1-2 [1]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            pick = ""
-        words = ["full"] if pick in ("2", "full", "f") else ["quick"]
+            pick = SU.pick_one("Which setup?", [
+                SU.Opt("quick", "Quick", "your username, the model, how often Aura asks · 1 minute"),
+                SU.Opt("full", "Full", "every part, one at a time · about 5 minutes")], "quick",
+                rec="quick")
+        except KeyboardInterrupt:
+            print()
+            print("  Setup stopped — run 'aura setup' any time.")
+            return 130
+        words = ["full"] if pick == "full" else ["quick"]
     mode = words[0] if words else "quick"
     if mode == "status":
         print("setup — what each step showed when it was checked:")
@@ -778,11 +781,14 @@ def cmd_setup(args) -> int:
     rc = SS.run(mode="full" if mode == "full" else "quick", only=only or None,
                 answers=answers, interactive=interactive,
                 dry_run=bool(getattr(args, "dry_run", False)))
-    if interactive and (mode in ("quick", "full") or "model" in only):
-        _offer_eval(0 if rc in (0, 2) else rc, ask_prompt=(mode == "full"))
+    if interactive and rc != 130 and (mode in ("quick", "full") or "model" in only):
+        try:
+            _offer_eval(0 if rc in (0, 2) else rc, ask_prompt=(mode == "full"))
+        except KeyboardInterrupt:
+            print()
     if mode == "quick" and rc in (0, 2):
-        print("more choices (import, safety, tools, web, connections, messages, "
-              "you and the look): aura setup full")
+        from . import setup_ui as SU
+        SU.note("more choices (safety, tools, web, apps, messages): aura setup full")
     return rc
 
 
@@ -807,14 +813,16 @@ def _offer_eval(rc: int, ask_prompt: bool = False) -> None:
         if not SP.choice(key):
             vals, src = SP.find(prof.base_url, model, prof.api_key)
             if vals:
-                print(f"\n{model}'s maker recommends: {SP.describe(vals)}\n"
-                      f"  (from {src}). Aura sends temperature 0.4 to every "
-                      "model unless told otherwise.")
-                ans = input("  use the maker's settings for this model? [y/N] ").strip().lower()
-                SP.save(key, "maker" if ans in ("y", "yes") else "aura", vals, src)
-                print("  ok — " + ("the maker's settings from the next message"
-                                   if ans in ("y", "yes") else "Aura's settings stay")
-                      + " (change: aura model settings maker|aura)")
+                from . import setup_ui as SU
+                SU.banner("The model's own settings")
+                SU.note(f"{model}'s maker recommends {SP.describe(vals)}")
+                SU.line(f"from {src}", "detail")
+                use = SU.yes_no("Use them for this model?", False, "Yes, use the maker's",
+                                "No, keep Aura's", no_hint="temperature 0.4")
+                SP.save(key, "maker" if use else "aura", vals, src)
+                SU.line(("the maker's settings from the next message" if use
+                         else "Aura's settings stay")
+                        + SU.dim("  (change: aura model settings maker|aura)"), "ok")
     except (Exception, KeyboardInterrupt):           # noqa: BLE001
         pass                    # An offer must never break setup
     # 2) the quick check: one call (tools) and what the server reports. The

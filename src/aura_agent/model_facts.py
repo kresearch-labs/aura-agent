@@ -374,8 +374,8 @@ def probe_capabilities(llm, log=print, full: bool = False) -> dict:
 
 
 ALL = ("caps", "edit_form", "early_check")
-QUICK = ("caps",)                 # what setup runs: one call
-DEEP = ("edit_form", "early_check")   # optional fine-tuning: aura eval model --deep
+QUICK = ("caps",)                 # What setup runs: one call
+DEEP = ("edit_form", "early_check")   # Optional fine-tuning: aura eval model --deep
 
 
 def hint(base_url: str, model: str) -> str | None:
@@ -393,7 +393,17 @@ def offer(llm, key: str, ask=input, say=print) -> dict | None:
     rec = load().get(key) or {}
     if rec.get("caps"):
         return None
-    say(f"\nchecking {key.split('|', 1)[-1]} (one short call):")
+    name = key.split('|', 1)[-1]
+    if say is print:                       # Setup's look: one line, details hidden
+        from . import setup_ui as SU
+        print()
+        SU.note(f"Getting to know {name} (one short call)…")
+        out = measure(llm, key, which=QUICK, log=lambda s: SU.line(str(s).strip(), "detail"))
+        SU.line(f"Aura knows what {name} can do", "ok")
+        SU.note(f"optional, deeper ({sum(COSTS[w] for w in DEEP)} calls): "
+                "aura eval model --deep")
+        return out
+    say(f"\nchecking {name} (one short call):")
     out = measure(llm, key, which=QUICK, log=lambda s: say(s))
     say("  optional fine-tuning for this model (edit form, ask-first habit; about "
         f"{sum(COSTS[w] for w in DEEP)} calls): aura eval model --deep")

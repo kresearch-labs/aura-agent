@@ -12,6 +12,7 @@ Contract: this module is transport only. Sessions/governor live elsewhere.
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 import urllib.error
@@ -218,6 +219,11 @@ def _shorten_wait(resp, seconds: int) -> None:
         pass
 
 
+_SYSROLE = re.compile(r"system (role|message|prompt)s? (is |are )?(not supported|unsupported|"
+                      r"not allowed)|unsupported role:? ?.?system|role .?system.? (is )?not",
+                      re.I)
+
+
 def merge_system(messages: list[dict]) -> list[dict]:
     """System messages folded into user text, for models that reject the
     system role: leading ones go at the start of the first user message,
@@ -380,6 +386,23 @@ class LLMClient:
                     if code in (400, 422) and wire_fit.heal(
                             body, detail, _wkey(self.p.base_url, body.get("model", "")),
                             keep):
+                        continue
+                    # A server that refuses the "system" role: learned the
+                    # first time it says so, remembered for this model, and the
+                    # same call sent again with Aura's text at the start of the
+                    # user's
+                    if code in (400, 422) and _SYSROLE.search(detail)                             and any(m.get("role") == "system" for m in body.get("messages") or []):
+                        try:
+                            from .model_facts import model_key as _mk, save_facts as _sf
+                            from .model_facts import load as _ld
+                            _key = _mk(self.p.base_url, self.p.model)
+                            _caps = dict((_ld().get(_key) or {}).get("caps") or {})
+                            _caps["system_role"] = {"value": "no", "how": "measured",
+                                                    "note": "the server refused it"}
+                            _sf(_key, {"caps": _caps})
+                        except Exception:               # noqa: BLE001
+                            pass
+                        body["messages"] = merge_system(body["messages"])
                         continue
                     if code in (400, 413) and any(
                             m in detail.lower() for m in _OVERFLOW_MARKERS):
