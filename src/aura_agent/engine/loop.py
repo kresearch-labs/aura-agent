@@ -725,6 +725,24 @@ class AgentLoop:
         except Exception as _swallowed:
             log_swallowed("loop.proof_note", _swallowed)
 
+    def _reprobe_ctx(self) -> None:
+        """The server wasn't answering when Aura opened: its context size is
+        asked now, before the first call, and used from here on."""
+        if getattr(self, "ctx_source", "") != "unreached" or self.governor is None:
+            return
+        try:
+            from ..ctx_probe import probe_context_length
+            ctx, src = probe_context_length(self.llm.p.base_url, self.llm.p.model)
+            if src == "unreached":
+                return
+            self.ctx_source = src
+            self.governor.ctx = ctx
+            self.governor.reply_reserve = min(
+                int(os.environ.get("AI_MAX_TOKENS", "16384")), max(1, ctx // 4))
+            self.llm.p.context_length = ctx
+        except Exception as _swallowed:                    # noqa: BLE001
+            log_swallowed("loop.reprobe_ctx", _swallowed)
+
     def _check_action(self, cmd: str) -> str:
         """It sees only the user's request and the command — never the agent's own
         words, so the agent can't talk it into a yes. "ALLOW" or "ASK: why".
@@ -1962,6 +1980,7 @@ class AgentLoop:
         # decides commands the rules can't read (action_risk.py)
         self.m.task_grants = set()
         self.m.checker = self._check_action
+        self._reprobe_ctx()
         self._check_cache = {}
         # Deliverable gate — where TASK.md-named artifacts live (sandbox cwd in
         # arena runs, engagement dir otherwise) the workspace: the user's
@@ -2145,6 +2164,8 @@ class AgentLoop:
         from ..notes import image_ref, user_text
         imgs = getattr(self, "pending_images", None) or []
         self.pending_images = []
+        note = getattr(self, "pending_note", "") or ""    # Aura's note on this message
+        self.pending_note = ""
         task = user_text(task)
         parts = []
         folder = (Path(session.path).parent / (Path(session.path).stem + "-images")
@@ -2163,7 +2184,10 @@ class AgentLoop:
                 parts.append(image_ref(str(dst), n=len(parts) + 1))
             except OSError as _swallowed:
                 log_swallowed("loop.image_attach", _swallowed)
-        return [{"type": "text", "text": task}] + parts if parts else task
+        if note and not parts:
+            return f"{task}\n\n{note}"
+        return [{"type": "text", "text": task}] + parts + (
+            [{"type": "text", "text": note}] if note else []) if parts else task
 
     def _environment(self) -> str:
         """."""

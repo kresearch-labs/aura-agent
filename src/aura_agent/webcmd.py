@@ -23,7 +23,7 @@ def web_command(eng: Path, args: list[str]) -> list[str]:
     out += W.status_lines()
     out.append("all websites: " + ("ON — any public website may be read"
                                    if load_scope(eng).get("web_all", True) else
-                                   "off — only websites in /scope (turn on: /web all on)"))
+                                   "off — only the allowed sites (/web sites; turn on: /web all on)"))
     out.append("connect a service: aura keys set BRAVE_API_KEY (or TAVILY_API_KEY, "
                "EXA_API_KEY, SERPER_API_KEY, FIRECRAWL_API_KEY, MARGINALIA_API_KEY, "
                "OPENALEX_API_KEY; SEARXNG_URL for your own server) · /web open on|off · "

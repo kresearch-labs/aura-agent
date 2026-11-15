@@ -15,7 +15,27 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
                   ("deep", "plan first, two sources each")],
     "/assist": [("L1", "asks before every change"), ("L2", "asks before risky actions"),
                 ("L3", "never asks")],
-    "/mode": [("act", "does the work"), ("plan", "reads and plans, changes nothing")],
+    "/mode": [("act", "does the work"), ("plan", "reads and plans, changes nothing"),
+              ("discuss", "talks it through, starts nothing"), ("L1", "asks before every change"),
+              ("L2", "asks before risky actions"), ("L3", "never asks")],
+    "/todos": [("on", "keep a step-by-step plan for this chat"), ("off", "no plan list")],
+    "/rewind": [("<step>", "the chat back to that step"), ("files [id]", "the files back to a saved point"),
+                ("save", "save the files now")],
+    "/status": [("machine on|off", "watch memory while working")],
+    "/usage": [("stats", "the whole session")],
+    "/results": [("run [verify]", "the run summary"), ("log", "what it did, to what"),
+                 ("check on|off", "re-check and test before answering")],
+    "/settings": [("features", "feature switches"), ("findaway on|off", "offer a way to what's missing"),
+                  ("limits", "usage limits")],
+    "/display": [("simple", "one line per action"), ("detailed", "every action with its output"),
+                 ("everything", "all of it, with tokens"), ("full", "full tool output")],
+    "/search": [("<words>", "every message of every chat"), ("reindex", "rebuild the index")],
+    "/context": [("prune", "trim old outputs")],
+    "/worktree": [("new [name]", "a separate git copy for this chat"), ("list", "every copy"),
+                  ("done", "merge, keep or remove it")],
+    "/review": [("<file|folder>", "review those files"), ("commit <id>", "one commit"),
+                ("branch [base]", "this branch against its base"),
+                ("<words>", "what to look at most")],
     "/discuss": [("on", "talk only — no changes"), ("off", "back to work")],
     "/findaway": [("on", "offer a way to what's missing — asks before any effort"),
                   ("off", "say what's missing and what you can do")],
@@ -30,11 +50,14 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
                ("low", "a little thinking"), ("medium", "more thinking"),
                ("high", "the most thinking — slowest")],
     "/proof": [("on", "re-check and test before answering"), ("off", "answer right away")],
-    "/plan": [("on", "keep a step-by-step plan for this chat"), ("off", "no plan")],
+    "/plan": [("on", "plan mode — reads and plans, changes nothing"), ("off", "back to work")],
     "/tui": [("fullscreen", "the whole window, sidebar"), ("inline", "your terminal's scrollback")],
-    "/web": [("open on|off", "the no-account sources"), ("all on|off", "read any public page")],
+    "/web": [("open on|off", "the no-account sources"), ("all on|off", "read any public page"),
+             ("research basic|normal|deep", "how far research goes"),
+             ("sites add|remove <site>", "allowed sites"), ("logins", "saved site logins")],
     "/cron": [("add <when> <task>", "schedule a job"), ("pause|resume <id>", "stop / restart one"),
-              ("remove <id>", "delete one"), ("run <id>", "run it here now")],
+              ("remove <id>", "delete one"), ("run <id>", "run it here now"),
+              ("templates", "ready-made jobs")],
     "/tools": [("on <group>", "send a tool group"), ("off <group>", "stop sending it"),
                ("list", "every tool and its group")],
     "/mcp": [("popular", "well-known servers"), ("search <words>", "the official registry"),
@@ -51,15 +74,15 @@ OPTIONS: dict[str, list[tuple[str, str]]] = {
 }
 
 EXAMPLES: dict[str, str] = {
-    "/research": "/research deep", "/assist": "/assist L1", "/mode": "/mode plan",
-    "/discuss": "/discuss on", "/team": "/team connect http://192.168.1.10:3456", "/think": "/think high", "/proof": "/proof on permanent", "/plan": "/plan on", "/tui": "/tui inline",
-    "/machine": "/machine on", "/web": "/web all on", "/cron": "/cron add every day at 09:00 summarize new issues",
+    "/research": "/web research deep", "/assist": "/mode L1", "/mode": "/mode plan",
+    "/discuss": "/mode discuss", "/team": "/team connect http://192.168.1.10:3456", "/think": "/think high", "/proof": "/results check on permanent", "/plan": "/plan", "/todos": "/todos on", "/tui": "/tui inline",
+    "/machine": "/status machine on", "/web": "/web all on", "/cron": "/cron add every day at 09:00 summarize new issues",
     "/tools": "/tools on web", "/mcp": "/mcp add context7", "/add-dir": "/add-dir ~/Downloads",
-    "/scope": "/scope add docs.python.org", "/rules": "/rules add never edit config/",
+    "/scope": "/web sites add docs.python.org", "/rules": "/rules add never edit config/",
     "/model": "/model llama3.3:70b", "/rename": "/rename auth refactor",
     "/resume": "/resume #a1b2c3", "/export": "/export notes.md",
     "/settings": "/settings find research", "/memory": "/memory forget 3",
-    "/theme": "/theme light", "/budget": "/budget preset frugal",
+    "/theme": "/theme light", "/budget": "/settings limits preset frugal",
 }
 
 
@@ -74,7 +97,9 @@ def _state(app, name: str) -> str | None:
             return {"L1": "L1 · asks every change", "L2": "L2 · asks before risky",
                     "L3": "L3 · never asks"}.get(getattr(m, "assist", "L2"))
         if name == "/mode":
-            return getattr(m, "mode", "act")
+            return getattr(m, "mode", "act") + " · " + {
+                "L1": "asks every change", "L2": "asks before risky",
+                "L3": "never asks"}.get(getattr(m, "assist", "L2"), "")
         if name == "/team":
             from ..editions import teams_present
             if not teams_present():
@@ -95,6 +120,8 @@ def _state(app, name: str) -> str | None:
             from .. import features
             return "on" if features.enabled("proof") else "off"
         if name == "/plan":
+            return "on" if getattr(m, "mode", "act") == "plan" else "off"
+        if name == "/todos":
             from .. import features
             return "on" if features.enabled("plan") else "off"
         if name == "/focus":

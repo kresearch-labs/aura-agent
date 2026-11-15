@@ -323,7 +323,7 @@ def _options() -> list[Option]:
     out.append(Option("assist.level", "Safety", "how much Aura asks",
                       "L1 asks before every change · L2 asks only before risky steps "
                       "(can't be undone, or reaches outside the project) · L3 never asks — "
-                      "new chats start here; /assist changes one chat",
+                      "new chats start here; /mode changes one chat",
                       "choice", "L2", choices=("L1", "L2", "L3"), getter=g, setter=s,
                       user_only=True,
                       words=("ask", "approve", "permission", "autonomy", "assist", "level")))
@@ -361,7 +361,7 @@ def _options() -> list[Option]:
                       "on = when something is missing (a program, a package, a sandbox) Aura "
                       "offers to find a way — it asks before any searching or installing; off = "
                       "it says what is missing and what you can do. Known limits (what the model "
-                      "itself can't do) are always said plainly — /findaway switches it",
+                      "itself can't do) are always said plainly — /settings findaway switches it",
                       "bool", False, getter=g, setter=s,
                       words=("find a way", "can't", "missing", "install", "sandbox", "workaround")))
     g, s = _plain("pblocks.on")
@@ -401,6 +401,14 @@ def _options() -> list[Option]:
                       "— /sidebar switches it",
                       "choice", "on", choices=("on", "off"), getter=g, setter=s,
                       words=("sidebar", "side panel", "panel", "info")))
+    g, s = _plain("review.auto")
+    out.append(Option("review.auto", "Code", "review after a task",
+                      "big = after a task that changed 3+ files or 100+ lines, a helper reviews "
+                      "it (finds bugs, checks each against the code) and shows what it found — "
+                      "fixing is your yes · always = after every task that changed code · off = "
+                      "only when you type /review",
+                      "choice", "big", choices=("big", "always", "off"), getter=g, setter=s,
+                      words=("review", "code review", "auto review", "second look", "check")))
     g, s = _plain("look.display")
     out.append(Option("look.display", "Look", "how much the chat shows",
                       "simple = one line per action, looking grouped, output hidden when it "
@@ -492,7 +500,7 @@ def _options() -> list[Option]:
                       "arXiv, PubMed, Stack Overflow, GitHub); normal (default) = any "
                       "topic on the web, kept small — a few searches, the top pages read; "
                       "deep = a plan first, two sources per question, keeps going until "
-                      "the scope is exhausted (or the budget) — /research basic|normal|deep "
+                      "the scope is exhausted (or the budget) — /web research basic|normal|deep "
                       "switches it for a chat",
                       "choice", "normal", choices=("basic", "normal", "deep"), getter=g, setter=s,
                       words=("research", "deep", "thorough", "exhaustive", "sources")))

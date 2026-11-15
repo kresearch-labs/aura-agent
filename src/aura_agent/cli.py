@@ -1049,7 +1049,8 @@ def cmd_completion(args) -> str:
             "stats", "send", "insights", "proxy", "serve", "fleet", "skills",
             "gateway", "doctor", "profiles", "init", "status", "selftest",
             "export", "report", "receipts-verify", "cron", "import-agent",
-            "chat", "eval", "scope", "settings", "approve", "reject", "prompt", "completion"]
+            "chat", "eval", "scope", "settings", "approve", "reject", "prompt", "completion",
+            "acp"]
     if args.shell == "bash":
         script = (
             "# aura bash completion\n"
@@ -1986,6 +1987,12 @@ def cmd_chat(args) -> int:
                 fork=getattr(args, "fork", None))
 
 
+def cmd_acp(args) -> int:
+    """Aura as an editor's agent (Agent Client Protocol over stdin/stdout)."""
+    from .acp import main
+    return main()
+
+
 def cmd_selftest(args) -> int:
     from .engine.selftest import run_selftest
     print(run_selftest())
@@ -2814,6 +2821,8 @@ def build_parser() -> argparse.ArgumentParser:
         apv.add_argument("reason", nargs="*")
         apv.set_defaults(fn=cmd_approve, approve=_yes)
     sub.add_parser("selftest").set_defaults(fn=cmd_selftest)
+    sub.add_parser("acp", help="run as an editor's agent (Zed, JetBrains, Neovim … — "
+                   "Agent Client Protocol)").set_defaults(fn=cmd_acp)
     rp = sub.add_parser("report", help="write report.md from the proven "
                                        "results")
     rp.add_argument("--out", default=None,

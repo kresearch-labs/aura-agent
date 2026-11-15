@@ -23,7 +23,7 @@ from pathlib import Path
 
 # language: (its name for people, the server, what it costs, the program it needs)
 CHECKERS = {
-    "python": ("Python", "basedpyright", "about 20 MB", None),
+    "python": ("Python", "basedpyright", "about 190 MB (it brings its own Node.js)", None),
     "typescript": ("JavaScript/TypeScript", "typescript-language-server", "about 30 MB", "node"),
     "go": ("Go", "gopls", "about 40 MB", "go"),
     "rust": ("Rust", "rust-analyzer", "about 60 MB", "rustup"),

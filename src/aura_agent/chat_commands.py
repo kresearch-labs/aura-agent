@@ -60,6 +60,8 @@ def _say_list(lines) -> None:
 def dispatch(ctx: ChatContext, line: str) -> Result:
     """Run one slash command. Unknown commands try the project's custom
     commands (commands/*.md) and otherwise say so."""
+    from .command_registry import route
+    line = route(line)                  # A merged command's word → the command that does it
     parts = line.split()
     if not parts:
         return Result()
@@ -178,8 +180,8 @@ def _status(ctx, parts, line):
         from .receipts import verify_chain
         v = verify_chain(ctx.eng)
         if v.get("checked"):
-            print("  run receipts " + (ui.ok(f"{v['checked']} intact") if v.get("ok")
-                                       else ui.warn(f"{len(v.get('breaks', []))} broken — /receipt verify")))
+            print("  run summaries " + (ui.ok(f"{v['checked']} intact") if v.get("ok")
+                                        else ui.warn(f"{len(v.get('breaks', []))} broken — /results run verify")))
     except Exception:          # noqa: BLE001
         pass
 
@@ -923,33 +925,40 @@ def _proof(ctx, parts, line):
     arg = parts[1].lower() if len(parts) > 1 else ""
     keep = "permanent" in [p.lower() for p in parts[2:]]
     if arg in ("on", "off"):
-        ui.success("proof check " + F.set_feature("proof", arg == "on", permanent=keep)
+        ui.success("the check before answering " + F.set_feature("proof", arg == "on", permanent=keep)
                    .split(":", 1)[1].strip())
         if keep:
             ctx.defaults_take("features")
         return Result()
     on = F.enabled("proof")
-    ui.info(f"proof check: {'on' if on else 'off'} — before the final answer Aura re-reads "
+    ui.info(f"the check before answering: {'on' if on else 'off'} — before the final answer Aura re-reads "
             "what the answer rests on and runs the project's tests (one turn to fix) · "
             "/proof on|off [permanent]")
 
 
 @command("/plan")
+def _plan_mode(ctx, parts, line):
+    """."""
+    arg = parts[1].lower() if len(parts) > 1 else ""
+    return _mode(ctx, ["/mode", "act" if arg == "off" else "plan"], line)
+
+
+@command("/todo-switch")
 def _plan(ctx, parts, line):
     """The plan switch: a step-by-step plan for THIS chat, only when you want one."""
     from . import features as F
     arg = parts[1].lower() if len(parts) > 1 else ""
     keep = "permanent" in [p.lower() for p in parts[2:]]
     if arg in ("on", "off"):
-        ui.success("plan " + F.set_feature("plan", arg == "on", permanent=keep)
+        ui.success("the plan list " + F.set_feature("plan", arg == "on", permanent=keep)
                    .split(":", 1)[1].strip())
         if keep:
             ctx.defaults_take("features")
         return Result()
     on = F.enabled("plan")
-    ui.info(f"plan: {'on' if on else 'off'} — when on, Aura keeps a step-by-step plan for "
-            "this chat and shows it in the sidebar; a new chat starts without one · "
-            "/plan on|off [permanent] · /todos shows it")
+    ui.info(f"the plan list: {'on' if on else 'off'} — when on, Aura keeps a step-by-step "
+            "plan for this chat and shows it in the sidebar; a new chat starts without one · "
+            "/todos on|off [permanent]")
 
 
 @command("/approvals")
@@ -1005,15 +1014,27 @@ def _mode(ctx, parts, line):
     new = (parts[1] if len(parts) > 1 else "").lower()
     if new not in ("act", "plan"):
         if len(parts) > 1:
-            ui.warn("mode is act or plan — bare /mode shows a menu")
+            ui.warn("mode is act, plan or discuss (or L1, L2, L3 for how often Aura asks) — "
+                    "bare /mode shows a menu")
             return Result()
         cur = getattr(ctx.m, "mode", "act")
-        new = ctx.choose("mode", [
-            ("act", "act", "build — full tools", cur == "act"),
-            ("plan", "plan", "plan — read and research only, no changes", cur == "plan"),
+        lvl = getattr(ctx.m, "assist", "L2")
+        new = ctx.choose("how Aura works", [
+            ("act · asks before risky actions", "L2", "does the work (L2)",
+             cur == "act" and lvl == "L2"),
+            ("act · asks before every change", "L1", "does the work, you OK each change (L1)",
+             cur == "act" and lvl == "L1"),
+            ("act · never asks", "L3", "works alone (L3)", cur == "act" and lvl == "L3"),
+            ("plan", "plan", "reads and plans, changes nothing", cur == "plan"),
+            ("discuss", "discuss", "talks it through, starts nothing", cur == "discuss"),
         ])
         if new is None:
             return Result()
+        if new in ("L1", "L2", "L3"):
+            ctx.m.mode = "act"
+            return _assist(ctx, ["/assist", new], line)
+        if new == "discuss":
+            return _discuss(ctx, ["/discuss", "on"], line)
     ctx.m.mode = new
     ui.success("mode → " + ("act (full tools)" if new == "act" else
                             "plan (read and research only)"))
@@ -1272,7 +1293,7 @@ def _decision(ctx, parts, line):
 def _todos(ctx, parts, line):
     from .todo import load_items, plan_on, render_checklist
     if not plan_on():
-        print(ui.muted("  the plan is off for this chat — /plan on keeps one"))
+        print(ui.muted("  the plan list is off for this chat — /todos on keeps one"))
         return
     items = load_items(ctx.eng, ctx.session.path.stem)
     print(render_checklist(items) if items else ui.muted("  no plan yet"))
@@ -1373,7 +1394,7 @@ def _receipt(ctx, parts, line):
         return Result()
     rid = parts[1] if len(parts) > 1 else latest_receipt(ctx.eng)
     if rid is None:
-        ui.info("no receipts yet — every run writes one")
+        ui.info("no run summaries yet — every run writes one")
     else:
         print(ui.muted(render_receipt_card(ctx.eng, rid)))
 
@@ -1419,6 +1440,44 @@ def _reindex(ctx, parts, line):
     from .history import rebuild, update
     rebuild()
     ui.success(f"past-chat index rebuilt: {update(ctx.eng)} chats read")
+
+
+@command("/editor")
+def _editor(ctx, parts, line):
+    """Connect an editor to Aura (editors.py): a card says which file and what
+    goes in; Aura writes it, keeping a copy of the old file."""
+    from . import editors as ED
+    which = parts[1].lower() if len(parts) > 1 else ""
+    if which not in ED.EDITORS:
+        which = ctx.choose("connect an editor to Aura — it runs Aura as its agent", [
+            (ED.EDITORS[k][0], k, str(ED.plan(k)["path"]), False) for k in ED.EDITORS])
+        if which is None:
+            return Result()
+    p = ED.plan(which)
+    if p["there"]:
+        ui.success(f"{p['label']} is already connected ({p['path']})")
+        return Result()
+    yes = ctx.choose(f"add Aura to {p['path']}? (runs: {p['entry']['command']} acp)", [
+        ("Yes, add it", "yes", "a copy of the old file is kept first", True),
+        ("No", "no", "", False)])
+    if yes != "yes":
+        ui.info("nothing changed")
+        return Result()
+    try:
+        ui.success(ED.connect(which))
+    except RuntimeError as e:
+        ui.warn(str(e))
+
+
+@command("/review")
+def _review(ctx, parts, line):
+    """Script mode's /review (the chat screen runs it in the background)."""
+    from . import review as RV
+    ws = getattr(ctx.loop, "workspace", None) or ctx.eng
+    res = RV.run(ctx.loop, ctx.m, ctx.eng, ws, " ".join(parts[1:]))
+    if res["label"]:
+        ui.info(f"review of {res['label']}:")
+    print(res["report"])
 
 
 @command("/diff")
@@ -1496,7 +1555,8 @@ def _fork(ctx, parts, line):
 def _rewind(ctx, parts, line):
     from .last_state import rewind_honest_limits
     if len(parts) < 2 or not parts[1].isdigit():
-        ui.info(f"/rewind <step> — this chat is at step {ctx.session.seq}")
+        ui.info(f"/rewind <step> — this chat is at step {ctx.session.seq} · /rewind files "
+                "[id] puts the files back to a saved point · /rewind save saves one now")
         ui.info(rewind_honest_limits())
         return Result()
     snap = ctx.session.restore(int(parts[1]))
@@ -1782,7 +1842,7 @@ def _cron(ctx, parts, line):
     jobs = C.load_jobs(ctx.eng)
     if sub in ("list", "ls"):
         if not jobs:
-            ui.info("no scheduled jobs — /cron add every day at 09:00 <task> · /blueprint has ready ones")
+            ui.info("no scheduled jobs — /cron add every day at 09:00 <task> · /cron templates has ready ones")
             return Result()
         now = time.time()
         for j in jobs:
@@ -1855,11 +1915,11 @@ def _blueprint(ctx, parts, line):
     if len(parts) < 2:
         for n, bp in BP.BLUEPRINTS.items():
             print(f"  {n:16}{bp['about']}")
-        ui.info("/blueprint <name> field=value … — shows the job and asks before adding it")
+        ui.info("/cron templates <name> field=value … — shows the job and asks before adding it")
         return Result()
     name = parts[1]
     if name not in BP.BLUEPRINTS:
-        ui.warn(f"no blueprint {name!r} — /blueprint lists them")
+        ui.warn(f"no template {name!r} — /cron templates lists them")
         return Result()
     values = BP.parse_values(line.split(None, 2)[2].split() if len(line.split(None, 2)) > 2 else [])
     task, sched_text, missing = BP.fill(name, values)

@@ -195,6 +195,8 @@ def describe_source(src: str | None) -> str:
     src = src or "?"
     if src == "override":
         return "set by you"
+    if src == "unreached":
+        return "not known yet — the server wasn't answering; asked again with the next message"
     if src == "cache":
         return "reported by the server earlier"
     if src == "measured":
@@ -212,6 +214,23 @@ def describe_source(src: str | None) -> str:
     return src
 
 
+def reachable(base_url: str, timeout: float = 0.8) -> bool:
+    """One quick connect to the server's address — before any probe, so a
+    server that is down costs under a second, not one wait per probe."""
+    try:
+        import socket
+        import urllib.parse
+        import urllib.request
+        u = urllib.parse.urlparse(base_url if "//" in str(base_url) else "http://" + str(base_url))
+        if u.scheme in urllib.request.getproxies() and not urllib.request.proxy_bypass(u.hostname or ""):
+            return True                  # Reached through a proxy: the probes find out
+        port = u.port or (443 if u.scheme == "https" else 80)
+        with socket.create_connection((u.hostname or "localhost", port), timeout=timeout):
+            return True
+    except Exception:                                # noqa: BLE001
+        return False
+
+
 def probe_context_length(base_url: str, model: str,
                          configured: int | None = None
                          ) -> tuple[int, str]:
@@ -221,6 +240,10 @@ def probe_context_length(base_url: str, model: str,
     key = f"{base_url}|{model}"
     if configured:
         return int(configured), "override"
+    # the server isn't answering: Aura opens at once (what it knew before, or
+    # the default) and asks again when the first message goes out
+    if not reachable(base_url):
+        return _cache_get(key) or (DEFAULT_CTX, "unreached")
     # the running window wins over any maximum (a loaded Ollama / LM Studio
     # model); it is not cached — it changes when the model is reloaded
     run = running_window(base_url, model)

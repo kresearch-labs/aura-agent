@@ -40,7 +40,7 @@ RUNNING_OK = {"/status", "/context", "/todos", "/usage", "/help", "/keys",
               "/kill", "/steer", "/theme", "/debug", "/tools", "/memory", "/display",
               "/rules", "/scope", "/receipt", "/copy", "/agents", "/transcript", "/",
               # switches that take effect at once, on the running task too
-              "/assist", "/plan", "/proof"}
+              "/assist", "/plan", "/proof", "/mode", "/discuss", "/todo-switch"}
 
 MODES = [("L2", "act"), ("L1", "act"), ("L2", "plan"), ("L3", "act")]
 
@@ -151,6 +151,8 @@ class ChatApp:
         self.quit = False
         self.spin_i = 0
         self.ctx_used = 0
+        self.relaunch = None               # (folder, message): the chat goes on in that folder
+        self.turn_orig: dict = {}
         self.team_state: tuple | None = None    # This chat's task: (last kind, queued)
         self.t_start = time.monotonic()
         self.changed_files: set[str] = set()
@@ -304,6 +306,7 @@ class ChatApp:
             threading.Thread(target=self._check_update, daemon=True).start()
             threading.Thread(target=self._check_box, daemon=True).start()
             self._title()
+            threading.Thread(target=self._offer_move, daemon=True).start()
             if self.first_task:
                 self.submit(self.first_task)
             self.render()
@@ -337,6 +340,12 @@ class ChatApp:
                 # The diff panel compares with how the file was before this
                 # chat first changed it
                 p0 = str((data.get("args") or {}).get("path", ""))
+                if p0 and p0 not in self.turn_orig:
+                    try:
+                        self.turn_orig[p0] = (self.workspace / p0).read_text(
+                            encoding="utf-8", errors="replace")
+                    except OSError:
+                        self.turn_orig[p0] = None
                 if p0 and p0 not in self.orig_files:
                     try:
                         self.orig_files[p0] = (self.workspace / p0).read_text(
@@ -622,6 +631,15 @@ class ChatApp:
             self._notify("Aura has a question")
         elif kind == "turn_done":
             self._turn_done(ev[1], ev[2])
+        elif kind == "review_done":
+            self._review_done(ev[1])
+        elif kind == "start_turn":
+            self.start_turn(ev[1])
+        elif kind == "relaunch":               # The chat moves to its folder and goes on there
+            self.running = False
+            self.relaunch = (ev[1], ev[2])
+            self.say(cells.notice_cell(f"working in {ev[1]}", self.s, self.cw, "ok"))
+            self.quit = True
         elif kind == "notice":
             self.say(cells.notice_cell(ev[2], self.s, self.cw, ev[1]))
         elif kind == "shell_done":
@@ -763,6 +781,7 @@ class ChatApp:
         elif kind == "ctx_state":
             _before = int(getattr(self, "ctx_used", 0) or 0)
             self.ctx_used = int(d.get("used") or 0)
+            self.ctx_measured = bool(d.get("measured"))       # The server's own count, not Aura's estimate
             if _before >= 4000 and self.ctx_used < 0.7 * _before:
                 why = getattr(self, "_ctx_why", "") or "older parts left out of this call"
                 self._ctx_why = ""
@@ -887,7 +906,7 @@ class ChatApp:
             d = A.describe(Path(path))
             if d["kind"] == "image":
                 imgs.append(path)
-                ed.file_text[n] = f"[image: {d['name']}]"
+                ed.file_text[n] = f"[image: {d['name']} · {path}]"
             elif d["ok"] and d["text"]:
                 if free and A.tokens(d["text"]) > free * A.BIG_SHARE:
                     ed.file_text[n] = aside(Path(path).stem, f"file {d['name']} ({d['note']})", d["text"])
@@ -955,6 +974,17 @@ class ChatApp:
                 send, note = vision_note(self.loop)
                 self.loop.pending_images = imgs if send else []
                 self.say(cells.notice_cell(note, self.s, self.cw))
+                if not send:
+                    # the model is told too — without it, it went looking for
+                    # the file with every search tool and found nothing. Rides
+                    # the message to the model only: skill offers, the task
+                    # check and habits read the user's own words
+                    self.loop.pending_note = ("[AURA NOTE] the user attached "
+                             + ", ".join(Path(i).name for i in imgs)
+                             + " but it was NOT sent: " + note.split(" — ")[0]
+                             + ". Don't look for the file — you can't see it. Say so "
+                             "in one line and ask the user to describe it, or to "
+                             "switch to a model that sees images (/model).")
         except Exception:      # noqa: BLE001
             pass
         self.running = True
@@ -974,6 +1004,7 @@ class ChatApp:
         self.turn_tools = 0
         self.turn_steps = 0
         self.turn_tokens = [0, 0]
+        self.turn_orig = {}                     # Files this task touched, as they were before
         self.activity = "thinking"
         self.reasoning = ""
         self.last_answer = ""
@@ -987,6 +1018,20 @@ class ChatApp:
     def _turn_thread(self, session, text: str) -> None:
         rec, err = None, None
         try:
+            from .. import work_folder as WF
+            if WF.needs_folder(self.eng) and self._is_work(session, text):
+                ws = self._pick_folder(text)
+                if ws is None:
+                    self.events.put(("notice", "info", "not started — Aura needs a folder to make "
+                                                        "this in; say where, or send it again"))
+                    self.events.put(("turn_done", None, None))
+                else:
+                    self.events.put(("relaunch", ws, text))
+                return
+        except Exception as e:     # noqa: BLE001 - never stops the turn
+            self.events.put(("notice", "warn", f"couldn't set up the folder ({e}) — "
+                                               "working in Aura's own folder"))
+        try:
             rec = self.loop.run(session, text,
                                 kill_check=lambda: bool(self.state.get("killed")),
                                 steer_queue=self.state.setdefault("steer_queue", []))
@@ -995,6 +1040,188 @@ class ChatApp:
         except Exception as e:     # noqa: BLE001
             err = str(e) or type(e).__name__
         self.events.put(("turn_done", rec, err))
+
+    def _auto_review(self) -> None:
+        """review.auto: a big change (or any, with 'always') gets a second look
+        right after the task, by a reading-only helper."""
+        try:
+            from .. import review as RV
+            from ..options import get as _oget
+            mode = str(_oget("review.auto") or "big")
+            changed = dict(getattr(self, "turn_orig", {}) or {})
+            if mode == "off" or not changed or getattr(self.m, "mode", "act") != "act":
+                return
+            diff = RV.chat_diff(self.workspace, changed)
+            if not RV.due(mode, diff):
+                return
+            files, lines = RV.size(diff)
+            self.say(cells.notice_cell(
+                (f"a big change ({files} file{'s' if files != 1 else ''}, {lines} lines) — Aura "
+                 "gives it a second look now" if mode == "big" else
+                 "Aura gives the change a second look now") + " · review.auto in /settings",
+                self.s, self.cw, "info"))
+            self.running = True
+            self.activity = "reviewing the changes"
+            self.turn_t0 = time.monotonic()
+            threading.Thread(target=self._review_thread, args=("", changed), daemon=True,
+                             name="aura-review").start()
+        except Exception:      # noqa: BLE001 - a review never breaks the chat
+            self.running = False
+
+    def _worktree_cmd(self, args: list) -> None:
+        """/worktree (worktree.py): new → the chat moves into a separate git
+        copy; done → merge, keep or remove it, and the chat goes back."""
+        from .. import worktree as WT
+        s, w = self.s, self.cw
+        sub = (args[0].lower() if args else "")
+        say = lambda text, kind="info": self.say(cells.notice_cell(text, s, w, kind))  # noqa: E731
+        ws = self.workspace
+        try:
+            if sub == "new":
+                info = WT.new(ws, " ".join(args[1:]))
+                say((f"opened {info['path']} again" if info.get("reopened") else
+                     f"made {info['path']} — branch {info['branch']}, from your current work")
+                    + (f" · copied {', '.join(info['copied'][:4])}" if info["copied"] else ""),
+                    "ok")
+                self.relaunch = (info["path"], None)
+                self.quit = True
+                return
+            if sub == "done":
+                if not WT.is_aura_worktree(ws):
+                    say("this chat isn't in a separate copy — /worktree new makes one")
+                    return
+                st, main = WT.state(ws), WT.main_root(ws)
+                if not st["dirty"] and not st["commits"]:
+                    say(WT.remove(ws), "ok")
+                else:
+                    into = WT._git(main, "rev-parse", "--abbrev-ref", "HEAD")[1].strip()
+                    lose = []
+                    if st["dirty"]:
+                        lose.append(f"{len(st['dirty'])} changed file{'s' if len(st['dirty']) != 1 else ''}")
+                    if st["commits"]:
+                        lose.append(f"{st['commits']} commit{'s' if st['commits'] != 1 else ''}")
+                    pick = self.choose(f"the separate copy has work in it ({' and '.join(lose)})", [
+                        (f"Merge it into {into}", "merge", "commits what's left, merges, removes the copy", True),
+                        ("Keep it", "keep", f"/worktree new {Path(ws).name} opens it again", False),
+                        ("Remove it", "remove", "deletes the copy and its branch — loses " + " and ".join(lose), False),
+                    ])
+                    if pick is None:
+                        return
+                    if pick == "merge":
+                        say(WT.merge(ws), "ok")
+                    elif pick == "remove":
+                        say(WT.remove(ws), "ok")
+                    else:
+                        say(f"kept {ws} — branch {st['branch']}")
+                self.relaunch = (main, None)
+                self.quit = True
+                return
+            items = WT.listing(ws)
+            here = WT.is_aura_worktree(ws)
+            lines = ([f"this chat works in the separate copy {Path(ws).name} — /worktree done "
+                      "when it's finished"] if here else [])
+            lines += [f"{i['path'].name} — branch {i['branch']}" for i in items] or \
+                ["no separate copies — /worktree new [name] makes one"]
+            for ln in lines:
+                say(ln)
+        except RuntimeError as e:
+            say(str(e), "warn")
+
+    def _review_thread(self, arg: str, changed: dict | None = None) -> None:
+        """/review: a reading-only helper looks at what this chat changed (or
+        what was named) — review.py. Its events don't reach this screen."""
+        try:
+            from .. import review as RV
+            res = RV.run(self.loop, self.m, self.eng, self.workspace, arg,
+                         changed=dict(changed if changed is not None else self.orig_files))
+        except Exception as e:     # noqa: BLE001
+            res = {"label": "", "report": f"the review couldn't run: {e}", "empty": True}
+        self.events.put(("review_done", res))
+
+    def _review_done(self, res: dict) -> None:
+        self.running = False
+        self.activity = ""
+        if res.get("label"):
+            self.say(cells.notice_cell(f"review of {res['label']} — "
+                                       f"{cells.fmt_secs(time.monotonic() - self.turn_t0)}",
+                                       self.s, self.cw, "info"))
+        self.stream = MarkdownStream(self.s, lambda: self.cw - 3)
+        self._emit_answer(self.stream.feed(res.get("report") or ""))
+        self._flush_answer()
+        from .. import review as RV
+        if RV.found_problems(res.get("report") or ""):
+            report = res["report"]
+
+            def ask():
+                yes = "Yes, fix them"
+                ans = self.asker("Fix what the review found?", [yes, "No, leave them"])
+                if ans == yes:
+                    self.events.put(("start_turn",
+                                     "Fix these problems a review found. Check each one in "
+                                     "the code first; fix only what is really wrong:\n" + report))
+            threading.Thread(target=ask, daemon=True).start()
+
+    def _is_work(self, session, text: str) -> bool:
+        """Real work (makes or changes things), not a question or chat — the
+        same check the task itself runs (task_view.py)."""
+        try:
+            return self.loop._task_view(session, text)[1] == "task"
+        except Exception:      # noqa: BLE001
+            return True
+
+    def _pick_folder(self, text: str):
+        """Where to make this: a new folder under ~/Aura named after the task,
+        or any folder the user names (made only with their yes). None = no
+        answer."""
+        from .. import work_folder as WF
+        sug = WF.suggest(text)
+        new, own = f"New folder: {sug}", "A folder of my choice"
+        q = "Where should Aura make this? (type a name or a full path to change it)"
+        for _try in range(3):
+            ans = self.asker(q, [new, own]).strip()
+            if not ans:
+                return None
+            if ans == own:
+                ans = self.asker("Which folder? Type its full path", []).strip()
+                if not ans:
+                    return None
+            p = sug if ans == new else WF.from_answer(ans)
+            if p is None:
+                return None
+            why = WF.not_usable(p)
+            if why:
+                q = f"{p} is {why} — Aura can't work there. Where should Aura make this?"
+                continue
+            if not p.exists():
+                if ans != new and not p.is_relative_to(WF.work_root()):
+                    yes = self.asker(f"{p} doesn't exist yet — make it?",
+                                     ["Yes, make it", "No"]).strip()
+                    if yes != "Yes, make it":
+                        q = "Where should Aura make this?"
+                        continue
+                p.mkdir(parents=True, exist_ok=True)
+            return p.resolve()
+        return None
+
+    def _offer_move(self) -> None:
+        """Files made before Aura asked where to work sit in Aura's own
+        folder: offered once, moved only on a yes (never overwritten)."""
+        try:
+            from .. import work_folder as WF
+            if not WF.offer_due(self.eng):
+                return
+            items = WF.users_items(self.eng)
+            dest = WF.work_root() / "earlier-work"
+            names = ", ".join(p.name for p in items[:4]) + (f" +{len(items) - 4}" if len(items) > 4 else "")
+            move, leave = f"Move them to {dest}", "Leave them where they are"
+            ans = self.asker(f"Files from your earlier chats are inside Aura's own folder "
+                             f"({names}). Move them to a folder of yours?", [move, leave], free=False)
+            WF.offered(self.eng, ans or "no answer")
+            if ans == move:
+                done = WF.move_items(self.eng, dest)
+                self.events.put(("notice", "ok", f"moved {len(done)} item(s) to {dest}"))
+        except Exception:      # noqa: BLE001 - an offer never breaks the chat
+            pass
 
     def _title_later(self) -> None:
         """A 3–6 word title for a new chat, made once after its first
@@ -1057,6 +1284,8 @@ class ChatApp:
         if problem:
             self.say(cells.notice_cell(str(problem), s, w, "err"))
         self.say(cells.footer_cell(parts, s, ok=not problem and not stopped and not missing))
+        if not stopped and not problem:
+            self._auto_review()
         # Plan mode: once the plan is given, back to act on its own — not when
         # the answer is a question back to you, or the turn stopped or failed
         if (getattr(self.m, "mode", "act") == "plan" and not problem and not stopped
@@ -1177,6 +1406,8 @@ class ChatApp:
 
     # ---------------------------------------------------------- commands --
     def run_command(self, line: str) -> None:
+        from ..command_registry import route
+        line = route(line)                 # A merged command's word → the command that does it
         cmd = line.split()[0].lower()
         if cmd in ("/keys", "/shortcuts"):
             self.overlay = {"kind": "help"}
@@ -1192,6 +1423,29 @@ class ChatApp:
             return
         if cmd == "/copy":
             self.copy_last()
+            return
+        if cmd == "/worktree":
+            if self.running:
+                self.flash("/worktree runs when this task ends")
+                self.later_cmds.append(line)
+                return
+            self.say([self.s("faint", self.s.g("arrow") + " " + line)])
+            self._worktree_cmd(line.split()[1:])
+            return
+        if cmd == "/review":
+            if self.running:
+                self.flash("/review runs when this task ends")
+                self.later_cmds.append(line)
+                return
+            self.say([self.s("faint", self.s.g("arrow") + " " + line)])
+            self.running = True
+            self.activity = "reviewing the changes"
+            self.turn_t0 = time.monotonic()
+            self.turn_tools = self.turn_steps = 0
+            self.turn_tokens = [0, 0]
+            arg = line.split(maxsplit=1)[1] if len(line.split()) > 1 else ""
+            threading.Thread(target=self._review_thread, args=(arg,), daemon=True,
+                             name="aura-review").start()
             return
         if cmd == "/usage":
             sent, got = self.chat_tokens
@@ -2820,19 +3074,18 @@ class ChatApp:
             except Exception:      # noqa: BLE001
                 pass
         used, total = self._ctx_numbers()
-        ctx_short = ""
         if "context" in want and total:
-            # How full the window is NOW, toward the point where Aura
-            # summarizes
-            at = (getattr(self, "ctx_marks", (0, 0)) or (0, 0))[1] or int(total * 0.8)
+            # Used / the whole window, a bar and the percent; "~" when the
+            # number is Aura's estimate, not the server's own count
             seg = 10
-            near = min(1.0, used / at) if at else 0.0
-            fill = max(1 if used else 0, min(seg, round(seg * near)))
-            role = "ok" if near < 0.75 else "warn" if near < 0.95 else "err"
+            pct = max(0, min(100, round(100 * used / total))) if total else 0
+            fill = max(1 if used else 0, min(seg, round(seg * pct / 100)))
+            role = "ok" if pct < 50 else "warn" if pct < 95 else "err"
+            mark = "" if getattr(self, "ctx_measured", False) else "~"
             meter = s(role, s.g("meter_full") * fill) + s("faint", s.g("meter_empty") * (seg - fill))
-            ctx_short = s("faint", "context ") + meter + " " + s("dim", cells.fmt_tokens(used))
-            left.append(("context", ctx_short + s("faint", " · ")
-                         + s("dim", f"{cells.fmt_tokens(max(0, at - used))} until summary")))
+            left.append(("context", s("faint", "context ") + s("dim", f"{mark}{cells.fmt_tokens(used)}")
+                         + s("faint", f"/{cells.fmt_tokens(total)}") + " " + meter + " "
+                         + s(role, f"{mark}{pct}%")))
         if "team" in want:                         # Aura Teams, when connected
             try:
                 from ..teams_ui import snapshot, status_mark
@@ -2878,9 +3131,6 @@ class ChatApp:
                 break
             left = [p for p in left if p[0] != name]
             right = [p for p in right if p[0] != name]
-            line = build()
-        if not line and ctx_short:
-            left = [(n, ctx_short if n == "context" else t) for n, t in left]   # Narrow: the bar + now
             line = build()
         return cut(line or (" " + sep.join(t for _, t in left)), w - 1)
 
@@ -3029,11 +3279,9 @@ def _git_branch(ws: Path) -> str:
 
 
 def use_tui() -> bool:
-    """The new chat runs on a real terminal unless AURA_UI=classic."""
-    if os.environ.get("AURA_UI", "").lower() in ("classic", "plain", "0"):
-        return False
-    if os.environ.get("AURA_FRAME") == "0":
-        return False
+    """The chat screen on a real terminal — the one screen; no terminal = script
+    mode.
+    """
     try:
         return sys.stdin.isatty() and sys.stdout.isatty()
     except Exception:      # noqa: BLE001

@@ -147,6 +147,9 @@ def run_delegate(parent_root: Path, profile, scope: Scope,
                       governor=governor, root=root)
     child.tool_list = tool_list
     child.workspace = ws
+    # a helper's words come back as its summary — never straight onto the
+    # user's screen (the review showed twice)
+    child.stream_sink = lambda kind, text: None
     child.parent_run = role.get("parent_run", "")     # Receipts linked
     session = new_session(root / "sessions", name)
     rec = child.run(session, task, steer_queue=steer_queue, work_dir=ws)

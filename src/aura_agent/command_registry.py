@@ -220,6 +220,104 @@ COMMANDS: list[CommandSpec] = [
                 "usage: /powerup", group="session"),
 ]
 
+# One command per job: overlapping commands were merged into one. The old names
+# still work — they just aren't listed.
+HIDDEN = {"/assist", "/discuss", "/checkpoint", "/restore", "/machine", "/insights",
+          "/receipt", "/audit", "/proof", "/research", "/scope", "/vault",
+          "/features", "/findaway", "/budget", "/debug", "/profile", "/blueprint",
+          "/reindex", "/delete", "/steer", "/prune"}
+_MERGED = {
+    "/mode": ("how Aura works: act, plan or discuss — and how often it asks "
+              "(L1 every change · L2 risky actions · L3 never)",
+              "usage: /mode · /mode act|plan|discuss · /mode L1|L2|L3"),
+    "/plan": ("plan mode: Aura reads and plans, changes nothing — /plan off goes back to work",
+              "usage: /plan · /plan off"),
+    "/todos": ("this chat's step-by-step plan list: on or off, and what's on it",
+               "usage: /todos · /todos on|off [permanent]"),
+    "/rewind": ("go back: the chat to an earlier step, or the files to a saved point",
+                "usage: /rewind <step> · /rewind files [id] · /rewind save"),
+    "/status": ("where things stand: mode, model, context, spend — and the machine",
+                "usage: /status · /status machine on|off"),
+    "/usage": ("tokens and spend for this chat · stats for the whole session",
+               "usage: /usage · /usage stats"),
+    "/results": ("what was done and whether it was checked · run summaries · the action log · "
+                 "the check before answering",
+                 "usage: /results · /results run [verify] · /results log · /results check on|off"),
+    "/web": ("the web: search services, research depth, allowed sites, saved logins",
+             "usage: /web · /web open|all on|off · /web research basic|normal|deep · "
+             "/web sites add|remove <site> · /web logins"),
+    "/settings": ("Aura's options: list, find, set, reset, undo — feature switches and limits too",
+                  "usage: /settings · find|set|reset|undo … · /settings features · "
+                  "/settings findaway on|off · /settings limits"),
+    "/display": ("how much the chat shows: simple, detailed, everything, or full tool output; "
+                 "thinking on/off",
+                 "usage: /display simple|detailed|everything|full · /display thinking on|off"),
+    "/cron": ("scheduled jobs: a card each — add, pause, resume, remove, run · ready-made templates",
+              "usage: /cron · /cron add <when> <task> · pause|resume|remove|run <id> · /cron templates"),
+    "/search": ("search past chats, with how each one ended",
+                "usage: /search <words> · /search reindex"),
+    "/context": ("what fills the context window · /context prune trims old outputs",
+                 "usage: /context · /context prune"),
+}
+# the merged command's words → the command that does it
+ROUTES: dict[str, dict[str, str]] = {
+    "/mode": {"l1": "/assist L1", "l2": "/assist L2", "l3": "/assist L3", "discuss": "/discuss on"},
+    "/todos": {"on": "/todo-switch on", "off": "/todo-switch off"},
+    "/rewind": {"save": "/checkpoint", "files": "/restore"},
+    "/status": {"machine": "/machine"},
+    "/usage": {"stats": "/insights"},
+    "/results": {"run": "/receipt", "log": "/audit", "check": "/proof"},
+    "/web": {"research": "/research", "sites": "/scope", "logins": "/vault"},
+    "/settings": {"features": "/features", "findaway": "/findaway", "limits": "/budget"},
+    "/display": {"full": "/debug"},
+    "/cron": {"templates": "/blueprint"},
+    "/search": {"reindex": "/reindex"},
+    "/context": {"prune": "/prune"},
+}
+
+
+def _merge() -> None:
+    import dataclasses
+    keep = []
+    for c in COMMANDS:
+        if c.name in HIDDEN:
+            continue
+        if c.name in _MERGED:
+            d, u = _MERGED[c.name]
+            c = dataclasses.replace(c, desc=d, usage=u)
+        keep.append(c)
+    keep.append(CommandSpec(
+        "/review", "a second look at the changes: finds bugs, checks each one against the "
+        "code, ranks them — changes nothing",
+        "usage: /review · /review <file|folder> · /review commit <id> · /review branch [base] "
+        "· /review <what to look at most>", group="project", example="try: /review"))
+    keep.append(CommandSpec(
+        "/editor", "connect an editor (Zed, JetBrains IDEs) — it runs Aura as its agent; Aura "
+        "writes the editor's setting after your yes",
+        "usage: /editor · /editor zed|jetbrains", group="project", example="try: /editor zed"))
+    keep.append(CommandSpec(
+        "/worktree", "a separate git copy of the project for this chat's work — new, list, "
+        "done (merge, keep or remove)",
+        "usage: /worktree · /worktree new [name] · /worktree list · /worktree done",
+        group="project", example="try: /worktree new login-fix"))
+    COMMANDS[:] = keep
+
+
+_merge()
+
+
+def route(line: str) -> str:
+    """'/web sites add x' → '/scope add x': a merged command's word reaches
+    the command that does it. Anything else comes back unchanged."""
+    parts = str(line or "").split()
+    if len(parts) < 2:
+        return line
+    head = parts[0].lower()
+    head = "/" + _ALIASES.get(head.lstrip("/"), head).lstrip("/")
+    to = ROUTES.get(head, {}).get(parts[1].lower())
+    return " ".join([to] + parts[2:]) if to else line
+
+
 _DAILY_FIVE = ["/help", "/model", "/undo", "/status", "/exit"]
 
 _ALIASES: dict[str, str] = {

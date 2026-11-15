@@ -661,7 +661,7 @@ _PHRASE = (
 
 def _typed_only(text: str) -> str:
     """The person's own typed words: anything they pasted is taken out."""
-    out = str(text or "")
+    out = str(text or "").split("[AURA NOTE]")[0]     # Aura's note on the message isn't theirs
     for chunk in PASTED:
         if chunk and len(chunk) >= 12:
             out = out.replace(chunk, " ")

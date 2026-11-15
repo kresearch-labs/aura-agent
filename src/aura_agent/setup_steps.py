@@ -2140,7 +2140,7 @@ STEPS: list[Step] = [
          look=_import_look, asks=_import_asks, save=_import_save, check=_import_check),
     Step("model", 1, "Your AI model", True, "aura setup model", look=_model_look,
          run=_model_run, check=_model_check),
-    Step("asking", 2, "How much Aura asks", True, "aura setup asking  ·  /assist in a chat",
+    Step("asking", 2, "How much Aura asks", True, "aura setup asking  ·  /mode in a chat",
          asks=_asking_asks, save=_asking_save, check=_asking_check),
     Step("safety", 3, "Safety", False, "aura setup safety",
          look=_safety_look, asks=_safety_asks, save=_safety_save, check=_safety_check),
