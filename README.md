@@ -14,7 +14,7 @@
 [![SWE-bench Verified](https://img.shields.io/badge/SWE--bench%20Verified-89.0%25-3fb950?style=for-the-badge)](#-proof-not-promises)
 [![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24145734.svg)](https://doi.org/10.5281/zenodo.24145734)
 
-[**Quick start**](#-quick-start) · [**Why Aura**](#-why-aura) · [**What it can do**](#-what-it-can-do) · [**Guide**](docs/easy/GUIDE.md) · [**Persona**](https://github.com/kresearch-labs/Persona) · [**Paper**](https://doi.org/10.5281/zenodo.24145734)
+[**Quick start**](#-quick-start) · [**Why Aura**](#-why-aura) · [**What it can do**](#-what-it-can-do) · [**Guide**](docs/simple/GUIDE.md) · [**Persona**](https://github.com/kresearch-labs/Persona) · [**Paper**](https://doi.org/10.5281/zenodo.24145734)
 
 <br>
 
@@ -50,7 +50,7 @@ irm https://github.com/kresearch-labs/aura-agent/releases/latest/download/instal
 cd my-project && aura chat
 ```
 
-One command, every platform. The installer brings its own Python, refuses any package that doesn't match the release's checksums, touches nothing outside `~/.aura`, and ends in `aura setup` — point Aura at Ollama, vLLM, LM Studio, llama.cpp or any OpenAI-compatible API and you're working. From a clone, Docker, `pip`, updates and uninstall: [Guide → Install](docs/easy/GUIDE.md#-install-in-detail).
+One command, every platform. The installer brings its own Python, refuses any package that doesn't match the release's checksums, touches nothing outside `~/.aura`, and ends in `aura setup` — point Aura at Ollama, vLLM, LM Studio, llama.cpp or any OpenAI-compatible API and you're working. From a clone, Docker, `pip`, updates and uninstall: [Guide → Install](docs/simple/GUIDE.md#-install-in-detail).
 
 ## 🏆 Why Aura
 
@@ -157,7 +157,7 @@ Type `/` for the menu; TAB completes. Something failed? `aura doctor`.
 
 **Can it break things?** Every write is snapshotted for `/undo`, it can't reach outside your project, and anything irreversible waits for your yes.
 
-**Where are the details?** In the [Guide](docs/easy/GUIDE.md) (or [the full text](docs/GUIDE.md)): profiles, keys, network scope, research sources, the trust architecture, scheduling, skills and measuring.
+**Where are the details?** In the [Guide](docs/simple/GUIDE.md) (or [the full text](docs/GUIDE.md)): profiles, keys, network scope, research sources, the trust architecture, scheduling, skills and measuring.
 
 ## 🤝 Contributing
 
