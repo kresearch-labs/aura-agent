@@ -210,7 +210,22 @@ def apply_model(loop, profile, eng: Path) -> str:
 _ADD_DIRS: list[str] = []
 
 
+def utf8_streams() -> None:
+    """Windows consoles and files default to cp1252/cp437, where ✓/✗/→ raise
+    UnicodeEncodeError — and output sent to a file or pipe crashed the whole
+    run. Every way in (the `aura` command, `python -m aura_agent`, code that
+    calls build_agent) passes here, so all of them write UTF-8."""
+    for st in (sys.stdout, sys.stderr):
+        if st is not None and hasattr(st, "reconfigure"):
+            try:
+                st.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:                        # noqa: BLE001
+                pass
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
 def build_agent(eng: Path, profile_name: str | None):
+    utf8_streams()
     from .config import resolve_settings
     settings = resolve_settings()   # Default layer; per-task flag = UNDISCUSSED
     profile = resolve(profile_name)
@@ -272,6 +287,10 @@ def build_agent(eng: Path, profile_name: str | None):
     # search_files (text in files, files by name)
     from .tools.search import register as register_search
     register_search(m, workspace, m._fs)
+    from .tools.locate import register as register_locate
+    register_locate(m, m._fs, workspace)
+    from .chat_parts import register as register_parts
+    register_parts(m, m._fs)
     # Past chats (history_search)
     from .history import register as register_history
     register_history(m, eng, m._fs)
@@ -457,6 +476,10 @@ def cmd_run(args) -> int:
     if getattr(args, "research", None):
         loop.research_mode = args.research
     session = new_session(eng / "sessions", args.task)
+    # the chat's identity keys the Teams lanes (link lookup, usage snapshot):
+    # the session file's stem — the same key every TeamsRun for this chat
+    # works under (teams_run.py's constructor takes the session stem too)
+    loop.chat_id = session.path.stem
     # Seq'd always-on ledger — the L1 truth source for every render
     from .ledger import Ledger
     from .contracts.bridge import LedgerBridge
@@ -1158,7 +1181,6 @@ def _skills_signing(args) -> int:
         return 1
     return 1
 
-
 def cmd_teams(args) -> int:
     """Aura Teams — the shared board. The hub is offered, never forced: licence
     and source are shown first, the download happens on a yes (architecture).
@@ -1166,8 +1188,22 @@ def cmd_teams(args) -> int:
     """
     from . import teams as T
     from . import teams_board as B
+    from . import teams as _T
+    from .teamserver.teamclient import AuraClient
     cmd = getattr(args, "tm_cmd", None)
     if cmd == "hub":
+        if getattr(args, "hub_cmd", "") == "autostart":
+            from . import teams as _TT
+            cfg = _TT.load_config()
+            w = (getattr(args, "hub_args", None) or ["status"])[0].lower()
+            if w in ("on", "off"):
+                from . import teams_server as _TS
+                for line in _TS.login_start(w == "on"):
+                    print(line)
+            else:
+                print("hub autostart:",
+                      "on" if cfg.get("team.hub_autostart") else "off")
+            return 0
         hcmd = getattr(args, "hub_cmd", "status")
         if hcmd == "setup":
             rel = T.latest_release()
@@ -1202,6 +1238,36 @@ def cmd_teams(args) -> int:
             print(r["detail"])
             return 0 if r["ok"] else 1
         if hcmd == "update":
+            from .teamserver import teamserver_db as _TDB
+            if _TDB.db_path().exists():
+                # YOUR own team server: offered on the hub machine, only on a
+                # yes, with a backup FIRST — mirroring the Vikunja hub's update
+                # card below
+                from . import teams_server as TS
+                print("Update this machine's team server:\n"
+                      "  1. a live backup runs FIRST (the hub keeps "
+                      "serving while it copies),\n"
+                      "  2. the hub stops,\n"
+                      "  3. you install the new build and start the hub "
+                      "again.\n"
+                      "Server and Aura are the same program — they update "
+                      "together.")
+                ans = input("make the backup and stop the hub for the "
+                            "update now? (yes/no) ").strip().lower()
+                if ans not in ("y", "yes"):
+                    print("okay — nothing changed.")
+                    return 0
+                r = TS.update_with_backup()
+                if r.get("ok"):
+                    for s in r.get("steps", []):
+                        print("·", s)
+                    print(r.get("next", ""))
+                else:
+                    print("the update did not finish:",
+                          r.get("detail"),
+                          "(done so far:",
+                          "; ".join(r.get("steps", [])) or "nothing", ")")
+                return 0 if r.get("ok") else 1
             text, rel = T.update_offer()
             print(text)
             if rel is None:
@@ -1213,10 +1279,45 @@ def cmd_teams(args) -> int:
             r = T.apply_update(rel)
             print(r["detail"] + (f" · backup: {r['backup']}" if r.get("backup") else ""))
             return 0 if r["ok"] else 1
+        if hcmd == "serve":
+            # YOUR own team server — start it on this machine
+            from . import teams_server as TS
+            from .teamserver import teamserver_db
+            if not teamserver_db.db_path().exists():
+                print("no team database here yet — the model's "
+                      "team_hub_start tool bootstraps YOUR server "
+                      "(the other `hub` commands manage an optional "
+                      "Vikunja hub)")
+                return 1
+            r = TS.start()
+            print(f"team server: running on port {r.get('port')}"
+                  + (" (already running)" if r.get("already") else "")
+                  if r.get("ok") else f"failed: {r.get('detail')}")
+            if r.get("ok"):
+                print(T.ADMIN_NOTE)
+            return 0 if r.get("ok") else 1
         if hcmd == "dump":
             r = T.hub_dump()
             print(r["detail"])
             return 0 if r["ok"] else 1
+        if hcmd == "backup":
+            from .teamserver import backup as TB
+            from .teamserver import teamserver_db
+            from .teamserver import log as TS_LOG
+            from .teamserver import store as TS_STORE
+            conn = teamserver_db.open_team()
+            if conn is None:
+                print("no team server database yet — start the team first")
+                return 1
+            out = TB.backup_now(conn, teamserver_db.backups_dir())
+            size = out.stat().st_size / 1e6
+            print(f"backup written: {out} ({size:.1f} MB); the last 14 are "
+                  "kept, older ones moved to backups/old/ (never deleted)")
+            with TS_STORE.write(conn):
+                TS_LOG.append(conn, None, *TS_LOG.server_event(), "hub.backup",
+                              out.name, None,
+                              {"path": str(out), "size": out.stat().st_size})
+            return 0
         if hcmd == "restore":
             r = T.hub_restore(args.dump_file)
             print(r["detail"])
@@ -1226,197 +1327,11 @@ def cmd_teams(args) -> int:
         print("hub binary:", "installed" if st["binary"] else "not installed",
               f"({st['release']})" if st["release"] else "")
         return 0
-    if cmd == "connect":
-        import os as _os
-        token = _os.environ.get("AURA_HUB_TOKEN", "")
-        if not token and getattr(args, "token_stdin", False):
-            token = sys.stdin.readline().strip()
-        elif not token and sys.stdin.isatty():
-            import getpass
-            token = getpass.getpass("hub API token (input hidden): ").strip()
-        if not token:
-            print("no token: set AURA_HUB_TOKEN or use --token-stdin "
-                  "(make one in Vikunja: Settings → API tokens)")
-            return 2
-        r = T.connect(args.url, args.user, token)
-        if r["ok"]:
-            print(f"connected to {r['hub']} as {r['username']} "
-                  f"(hub {r.get('version')}); token in the key store")
-            from . import teams_queue as Q
-            c = Q.link_caution(r["hub"])
-            if c:
-                print(c)
-            return 0
-        print(r["detail"])
-        return 1
-    if cmd == "board":
-        try:
-            print(B.team_summary() if getattr(args, "all", False) else B.board_summary())
-            return 0
-        except B.BoardError as e:
-            print(e)
-            return 1
-    if cmd == "link":
-        try:
-            r = B.match_request(" ".join(args.request))
-        except B.BoardError as e:
-            print(e)
-            return 1
-        if r["by_id"]:
-            t = r["match"]
-            if t:
-                print(f"task #{t['id']} — {t.get('title', '')}")
-                return 0
-            print(f"task #{r['by_id']} is not on the board (or not yours)")
-            return 1
-        if r["candidates"]:
-            if r["match"]:
-                t = r["match"]
-                print(f"This looks like #{t['id']} {t.get('title', '')} — "
-                      f"is it that one? (yes/no)")
-            else:
-                print("Which task is it? Candidates:")
-                for t in r["candidates"]:
-                    print(f"  #{t['id']} {t.get('title', '')}")
-            return 0
-        print("No task on the board matches. Add it as a task so the team "
-              "can see it? (without the board, the collision check can't "
-              "cover this work)")
-        return 1
-    if cmd == "start":
-        from . import teams_queue as Q
-        files = [f.strip() for f in args.files.split(",") if f.strip()]
-        try:
-            r = Q.task_start(args.task_id, args.summary,
-                             T.load_config().get("username", ""), files)
-        except B.BoardError as e:
-            print(e)
-            return 1
-        if r.get("queued"):
-            print("queued:", r["detail"])
-        else:
-            print(f"#{args.task_id} marked in progress")
-        return 0 if r["ok"] else 1
-    if cmd == "done":
-        from . import teams_queue as Q
-        changed = [f.strip() for f in args.changed.split(",") if f.strip()]
-        try:
-            r = Q.task_done(args.task_id, changed, args.shared, args.decision,
-                            args.commit, args.pushed, args.proof)
-            if r.get("held"):
-                print(r["detail"])
-                return 1
-            if r.get("queued"):
-                print("queued:", r["detail"])
-                return 0
-            if r["ok"]:
-                print("done — proof and comment are on the board"
-                      + (f" ({r['detail']})" if r.get("detail") else ""))
-                return 0
-            print(r.get("detail") or "could not mark done")
-            return 1
-        except B.BoardError as e:
-            print(e)
-            return 1
-    if cmd == "decision":
-        from . import teams_queue as Q
-        try:
-            r = Q.task_decision(args.task_id, " ".join(args.text))
-            if r.get("queued"):
-                print("queued:", r["detail"])
-            else:
-                print("decision recorded" if r["ok"] else "failed")
-            return 0 if r["ok"] else 1
-        except B.BoardError as e:
-            print(e)
-            return 1
-    if cmd == "read":
-        from . import teams_board as B
-        try:
-            r = B.read_task(args.task_id)
-            for l in r["tells"]:
-                print("·", l)
-            print("labels:", ", ".join(r["labels"]) or "none")
-            print("comments:", len(r["comments"]))
-            return 0
-        except B.BoardError as e:
-            print(e)
-            return 1
-    if cmd == "check":
-        from . import teams_collide as C
-        files = [f.strip() for f in args.files.split(",") if f.strip()]
-        try:
-            r = C.collision_check(args.task_id, files, args.repo,
-                                  T.load_config().get("username", ""))
-        except C.GitError as e:
-            print("git trouble:", e)
-            return 1
-        for line in r["lines"]:
-            print("·", line)
-        if not r["can_check"]:
-            return 1
-        return 2 if r["hits"] else 0          # 2 = hits found, user decides
-    if cmd == "git":
-        from . import teams_collide as C
-        try:
-            if args.git_cmd == "branch":
-                name = T.load_config().get("username") or ""
-                if not name:
-                    print("no username on record — `aura teams connect` first")
-                    return 1
-                print("on branch:", C.ensure_branch(args.repo, name))
-                return 0
-            if args.git_cmd == "commit":
-                changed = [f.strip() for f in args.changed.split(",") if f.strip()]
-                cid = C.commit_local(args.repo, changed, args.message)
-                print("committed:", cid or "nothing to commit")
-                return 0
-            if args.git_cmd == "push":
-                name = T.load_config().get("username") or ""
-                r = C.push_branch(args.repo, name)
-                print("pushed" if r["pushed"] else r["detail"])
-                return 0
-        except Exception as e:                       # noqa: BLE001
-            print("git:", e)
-            return 1
-    if cmd == "queue":
-        from . import teams_queue as Q
-        if getattr(args, "drop", None) is not None:
-            print(f"dropped {Q.drop(args.drop)} waiting update(s) for #{args.drop}")
-            return 0
-        print(Q.queue_summary())
-        return 0
-    if cmd == "sync":
-        from . import teams_queue as Q
-        try:
-            r = Q.sync()
-            for l in r.get("lines", []):
-                print("·", l)
-            print(r["detail"])
-            return 0
-        except Exception as e:                       # noqa: BLE001
-            print("sync:", e)
-            return 1
-    if cmd == "chat":
-        from . import teams_chat as CH
-        ccmd = getattr(args, "chat_cmd", "status")
-        if ccmd in ("on", "off"):
-            cfg = T.load_config()            # Remembered: starts with the hub or not
-            cfg["chat"] = ccmd
-            T.save_config(cfg)
-        if ccmd == "on":
-            r = CH.start(f"http://127.0.0.1:{T.hub_port()}")
-            print(f"chat page: http://{T.lan_address()}:{r['port']}/"
-                  if r["ok"] else r["detail"])
-            return 0 if r["ok"] else 1
-        if ccmd == "off":
-            print(CH.stop()["detail"] + " — it stays off when the hub starts "
-                  "(`aura teams chat on` to bring it back)")
-            return 0
-        if CH.running():
-            print(f"chat page: http://{T.lan_address()}:{CH.chat_port()}/ (running)")
-        else:
-            print("chat page: not running (starts with `aura teams hub start`)")
+    if cmd == "join":
+        # codes/invites are gone: joins are the admin's account card + the
+        # person's own password
+        print("joining works with a name and password now — the team's admin "
+              "makes the account (Administration > Users); you sign in at /team/")
         return 0
     if cmd == "security":
         from . import teams_queue as Q
@@ -1425,10 +1340,74 @@ def cmd_teams(args) -> int:
             print(("✓" if passed else "✗"), what)
             ok = ok and passed
         return 0 if ok else 1
+    if cmd == "reports":
+        return _cmd_teams_reports(args)              # The reports lane has a
+                                                     # handler — prove it
+    if cmd == "chat":
+        # The chat IS the team page
+        cfg = T.load_config()
+        url = (cfg.get("hub_url") or "").rstrip("/")
+        ccmd = getattr(args, "chat_cmd", "status")
+        if not url:
+            print("no hub connected — `aura setup teams` first; "
+                  "the chat lives in its page")
+            return 1
+        if ccmd == "on":
+            import webbrowser
+            webbrowser.open(f"{url}/team/#/chat")
+            print(f"the team's chat opened in your browser ({url}/team/#/chat)")
+        elif ccmd == "off":
+            print("the switch is the team page's Admin › Hub (the "
+                  "chat_enabled team setting); the hub kills the chat routes "
+                  "the moment it's off")
+        else:
+            print(f"chat: the team page's tab — {url}/team/#/chat")
+        return 0
+    if cmd == "connect":
+        # the direct cli lane never carried a wiring handshake — that is the
+        # card's job (connect with an address in a chat, or setup)
+        print('connecting happens in a chat — tell me: "connect to our hub at '
+              '<address>" (I make the wiring as a card); the chance lane: '
+              "aura setup teams")
+        return 0
     # teams status (default)
     print(T.status_line())
+    # When this Aura is on its own team server, surface the newer/older
+    # protocol tell ONCE per client (the server sends its protocol on every
+    # response; the client remembers it)
+    at = _T.load_config().get("aura_team")
+    if at:
+        try:
+            c = AuraClient(at)
+            if c.sk is not None:
+                c.request("GET", "/api/v1/me")
+                note = c.protocol_tell()
+                if note:
+                    print(note)
+        except Exception:                            # noqa: BLE001
+            pass
     return 0
     return 0
+
+def _cmd_teams_reports(args):
+    """`aura teams reports on|off|status`"""
+    from . import teams
+    cfg = teams.load_config()
+    at = cfg.get("aura_team")
+    if not at:
+        print("not on your own team server yet")
+        return 1
+    if not args:
+        print("reports:", "on" if cfg.get("team.reports", True) else "off")
+        return 0
+    w = args[0].lower()
+    if w in ("on", "off"):
+        cfg["team.reports"] = (w == "on")
+        teams.save_config(cfg)
+        print(f"reports {w} — work events share, by code only")
+        return 0
+    print("usage: aura teams reports on|off|status")
+    return 1
 
 
 def cmd_skills(args) -> int:
@@ -1966,6 +1945,13 @@ def _chat_ref(eng, ref: str | None) -> tuple[str | None, int]:
 
 
 def cmd_chat(args) -> int:
+    try:
+        from . import teams_server as _TS
+        _r = _TS.autostart_if_set()
+        if _r and _r.get("ok"):
+            print(f"team hub: up ({_r.get('port', '?')})")
+    except Exception:                                # noqa: BLE001
+        pass
     from .repl import chat
     eng = engagement_dir(args.dir)
     import atexit
@@ -2614,26 +2600,38 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Aura Teams: the shared board (hub) and your "
                              "connection to it")
     tm_sub = tm.add_subparsers(dest="tm_cmd")
-    tmh = tm_sub.add_parser("hub", help="the hub program (works with Vikunja)")
+    tmh = tm_sub.add_parser("hub", help="the team hub: your own (serve, autostart, "
+                                        "backup) or an optional outside Vikunja hub "
+                                        "(setup, start, stop, update, dump, restore)")
     tmh_sub = tmh.add_subparsers(dest="hub_cmd")
+    tmauto = tmh_sub.add_parser("autostart",
+                                help="start this machine's team hub when the "
+                                     "computer starts: on | off")
+    tmauto.add_argument("hub_args", nargs="*", help="on | off")
     tmhs = tmh_sub.add_parser("setup",
-                              help="offer the hub download: licence, source and "
-                                   "size first; downloads only on a yes")
-    tmhs.add_argument("--port", type=int, help="the hub's port (default 3456; remembered)")
-    tmhst = tmh_sub.add_parser("start", help="start the hub (data in Aura's folder)")
-    tmhst.add_argument("--port", type=int, help="the hub's port (default: the last one, else 3456)")
-    tmh_sub.add_parser("stop", help="stop the hub")
-    tmh_sub.add_parser("status", help="is the hub installed / running")
+                              help="offer the outside Vikunja hub's download: licence, "
+                                   "source and size first; downloads only on a yes")
+    tmhs.add_argument("--port", type=int, help="the Vikunja hub's port (default 3456; remembered)")
+    tmhst = tmh_sub.add_parser("start", help="start the outside Vikunja hub (data in Aura's folder)")
+    tmhst.add_argument("--port", type=int, help="its port (default: the last one, else 3456)")
+    tmh_sub.add_parser("stop", help="stop the outside Vikunja hub")
+    tmh_sub.add_parser("status", help="is the outside Vikunja hub installed / running")
     tmh_sub.add_parser("update",
                        help="offer a new hub version (only on a yes)")
     tmh_sub.add_parser("dump", help="Vikunja's own dump, of this hub's data")
+    tmh_sub.add_parser("backup",
+                       help="back the team database up now (last 14 kept)")
     tmhr2 = tmh_sub.add_parser("restore", help="restore a dump on this machine")
     tmhr2.add_argument("dump_file")
+    tmh_sub.add_parser("serve",
+                       help="start your own team hub on this machine")
+    tm_sub.add_parser("join",
+                      help="how a person joins (name + password, no codes)")
     tmc = tm_sub.add_parser("connect",
                             help="connect to a hub: address + your name; "
                                  "the token is read from AURA_HUB_TOKEN "
                                  "or asked for quietly")
-    tmc.add_argument("url", help="the hub's address, e.g. http://192.168.1.10:3456")
+    tmc.add_argument("url", help="the hub's address, e.g. https://192.168.1.10:7443")
     tmc.add_argument("--user", default=None,
                      help="your name on the team (your branch name) — "
                           "asked at setup; this sets or changes it")
@@ -2641,39 +2639,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="read the API token from stdin instead of the "
                           "AURA_HUB_TOKEN environment variable")
     tm_sub.add_parser("status", help="hub + connection at a glance")
-    tmb = tm_sub.add_parser("board", help="your open tasks, blocked and due marks")
-    tmb.add_argument("--all", action="store_true",
-                     help="everyone's open work you can see (for the lead)")
-    tml = tm_sub.add_parser("link",
-                            help="match a request to your tasks and ask "
-                                 "(#12 auto-matches; otherwise word match)")
-    tml.add_argument("request", nargs="+")
-    tms = tm_sub.add_parser("start",
-                            help="mark a task started: label + comment "
-                                 "(planned files are an estimate)")
-    tms.add_argument("task_id", type=int)
-    tms.add_argument("--summary", required=True)
-    tms.add_argument("--files", default="", help="planned files, comma-separated")
-    tmd = tm_sub.add_parser("done",
-                            help="mark a task done — only with proof")
-    tmd.add_argument("task_id", type=int)
-    tmd.add_argument("--changed", required=True, help="files changed, comma-separated")
-    tmd.add_argument("--shared", default="none")
-    tmd.add_argument("--decision", default="none")
-    tmd.add_argument("--commit", default="none")
-    tmd.add_argument("--pushed", action="store_true")
-    tmd.add_argument("--proof", required=True, help="checks run + their result")
-    tmc2 = tm_sub.add_parser("decision", help="record a decision on a task")
-    tmc2.add_argument("task_id", type=int)
-    tmc2.add_argument("text", nargs="+")
-    tmr = tm_sub.add_parser("read", help="a task: blocked-by, due, labels, comments")
-    tmr.add_argument("task_id", type=int)
-    tmq = tm_sub.add_parser("queue", help="updates waiting for the hub, in order")
-    tmq.add_argument("drop_word", nargs="?", choices=["drop"],
-                     help="drop what waits for one task (you decided)")
-    tmq.add_argument("drop", nargs="?", type=int, help="the task number")
-    tm_sub.add_parser("sync", help="send the queued updates (re-reads first: "
-                                   "nothing of yours is overwritten)")
+    tmr = tm_sub.add_parser("reports", help="work-event reports: on, off, or status")
+    tmr.add_argument("reports_args", nargs="*", help="on | off | (empty = status)")
     tmq2 = tm_sub.add_parser("security", help="the security pass, as checks")
     tmc3 = tm_sub.add_parser("chat", help="the LAN chat page (starts/stops with the hub)")
     tmc3_sub = tmc3.add_subparsers(dest="chat_cmd", required=True)
@@ -2682,25 +2649,6 @@ def build_parser() -> argparse.ArgumentParser:
                                     "team uses another chat app (the hub stays up)")
     tmc3_sub.add_parser("on", help="start the chat page now, and with the hub from now on")
     tm.set_defaults(fn=cmd_teams)
-    tmk = tm_sub.add_parser("check",
-                            help="the collision check before starting work: "
-                                 "same task / same files / shared pieces / "
-                                 "a newer decision")
-    tmk.add_argument("task_id", type=int)
-    tmk.add_argument("--files", default="", help="planned files, comma-separated")
-    tmk.add_argument("--repo", default=".", help="the repository, if there is one")
-    tmg = tm_sub.add_parser("git", help="branch / commit / push (a branch per "
-                                        "person, push on a yes)")
-    tmg_sub = tmg.add_subparsers(dest="git_cmd", required=True)
-    tmgb = tmg_sub.add_parser("branch", help="switch to (or create) your branch")
-    tmgb.add_argument("--repo", default=".")
-    tmgc = tmg_sub.add_parser("commit", help="commit locally after a task")
-    tmgc.add_argument("--repo", default=".")
-    tmgc.add_argument("--changed", required=True,
-                      help="files to commit, comma-separated")
-    tmgc.add_argument("--message", required=True)
-    tmgp = tmg_sub.add_parser("push", help="push your branch (only on a yes)")
-    tmgp.add_argument("--repo", default=".")
     tm.set_defaults(fn=cmd_teams)
     comp = sub.add_parser("completion",
                           help="shell completion script (bash|zsh|fish)")
@@ -2990,6 +2938,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> None:
+    utf8_streams()
     ap = build_parser()
     args = ap.parse_args(argv)
     _pick_profiles(args)

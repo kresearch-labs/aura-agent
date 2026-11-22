@@ -134,10 +134,16 @@ class SelfTest:
         assert not bad, f"invalid tasks: {bad}"
 
         def solver(task):
-            steps = [{"id": f"c{i}", "name": "write_file",
-                      "arguments": json.dumps({"path": p, "content": c}),
-                      "parsed_arguments": {"path": p, "content": c}}
-                     for i, (p, c) in enumerate(task["solution"].items())]
+            # read, then write — a whole-file write over a file not read in
+            # the chat is refused (fs._overwrite_guard), as for a real model
+            steps = []
+            for i, (p, c) in enumerate(task["solution"].items()):
+                steps.append({"id": f"r{i}", "name": "read_file",
+                              "arguments": json.dumps({"path": p}),
+                              "parsed_arguments": {"path": p}})
+                steps.append({"id": f"c{i}", "name": "write_file",
+                              "arguments": json.dumps({"path": p, "content": c}),
+                              "parsed_arguments": {"path": p, "content": c}})
             steps.append("done")
 
             class LLM:
@@ -840,7 +846,18 @@ class SelfTest:
         tl = _loop.tool_list
         sent = {s["function"]["name"] for s in _loop.schemas}
         reachable = set(tl.all)
+        # 's law has one allowed shape: Teams off until setup means the team's
+        # toolset never REACHES the model (the ToolList's own construction
+        # drops them). Those register but stay unreachable ON PURPOSE — guard
+        # that it is exactly that lane, nothing else.
+        from aura_agent import teams as _TT
+        from aura_agent.toolsets import set_of
         unseen = set(m.tools) - reachable - set(NOT_OFFERED)
+        if not _TT.enabled():
+            off_team = {n for n in unseen if set_of(n) == "team"}
+            assert all(n.startswith("team_") for n in off_team), (
+                f"a non-team tool went unreachable: {sorted(off_team)}")
+            unseen -= off_team
         # use_tool is the loop's own wrapper: it unwraps into the real call
         unrun = (sent | reachable) - set(m.tools) - {"use_tool"}
         assert not unseen, f"registered but unreachable for the model: {sorted(unseen)}"

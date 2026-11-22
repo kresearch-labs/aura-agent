@@ -53,10 +53,13 @@ def _position(root: Path, path: str, name: str):
 
 def _file_with(root: Path, name: str, lang_of) -> str | None:
     """A project file that mentions the name, in a language with a server."""
-    from .search import SKIP_DIRS
+    from .search import _walk
     pat = re.compile(rf"(?<![\w]){re.escape(name)}(?![\w])")
-    for p in sorted(root.rglob("*")):
-        if any(part in SKIP_DIRS for part in p.parts) or not p.is_file() or not lang_of(p.name):
+    # The project walk search uses: dependency/ignored folders never opened,
+    # and a user's stop ends it
+    for rel in sorted(_walk(root, root)):
+        p = root / rel
+        if not lang_of(p.name):
             continue
         try:
             if pat.search(p.read_text(encoding="utf-8", errors="replace")):
@@ -97,8 +100,8 @@ def code_nav(root: Path, args: dict) -> str:
     action = str(args.get("action", "definition")).lower()
     name = str(args.get("name", "")).strip()
     path = str(args.get("path", "")).strip().replace("\\", "/").lstrip("./")
-    if action not in ("definition", "references", "symbols"):
-        return "error: action is definition, references or symbols"
+    if action not in _ACTIONS:
+        return "error: action is " + ", ".join(_ACTIONS)
     if action != "symbols" and not re.fullmatch(r"[A-Za-z_$][\w$.]*", name or ""):
         return "error: give the name of a function, class or variable"
     if action == "symbols" and not path:
@@ -138,15 +141,22 @@ def code_nav(root: Path, args: dict) -> str:
                 if pos:
                     params = {"textDocument": {"uri": uri},
                               "position": {"line": pos[0], "character": pos[1]}}
+                    if action == "type":
+                        return _hover(c.request("textDocument/hover", params), name)
+                    if action in ("callers", "callees"):
+                        return _calls(c, params, action, root, name)
                     if action == "references":
                         # True: an import alias ("from geo import area as
                         # size") is a declaration to the server — excluding
                         # declarations dropped that use
                         params["context"] = {"includeDeclaration": True}
-                    res = c.request("textDocument/" + action, params)
+                    method = "implementation" if action == "implementations" else action
+                    res = c.request("textDocument/" + method, params)
                     lines = _locs(res, root)
                     if lines:
                         return "\n".join(lines) + "\n(from the language server)"
+                    if action == "implementations":
+                        return f"no implementations of {name} found (language server)"
     except Exception:                                    # noqa: BLE001
         pass
     # 2) the built-in way
@@ -159,10 +169,62 @@ def code_nav(root: Path, args: dict) -> str:
                                        "path": str(Path(path).parent) if "/" in path else ".",
                                        "glob": Path(path).name, "limit": MAX_LINES})
         return "\n".join(lines) + "\n(built-in outline — no language server installed)"
+    if action in ("type", "implementations", "callees"):
+        return (f"{action} needs a language server for this language, and none is installed "
+                "— code_nav definition / references and search_files still work")
     from .search import search_files
-    out = search_files(root, {"pattern": rf"\b{re.escape(name.split('.')[-1])}\b",
-                              "limit": MAX_LINES})
+    word = re.escape(name.split('.')[-1])
+    if action == "callers":
+        out = search_files(root, {"pattern": rf"\b{word}\s*\(", "limit": MAX_LINES})
+        return out + "\n(built-in search for calls — no language server for this language)"
+    out = search_files(root, {"pattern": rf"\b{word}\b", "limit": MAX_LINES})
     return out + "\n(built-in search, definitions first — no language server for this language)"
+
+
+_ACTIONS = ("definition", "references", "symbols", "type", "implementations",
+            "callers", "callees")
+
+
+def _hover(res, name: str) -> str:
+    """The server's hover text (type, signature, docs) as plain text."""
+    if not res:
+        return f"the language server has no type information for {name}"
+    c = res.get("contents") if isinstance(res, dict) else None
+    parts = c if isinstance(c, list) else [c]
+    out = []
+    for x in parts:
+        if isinstance(x, dict):
+            out.append(str(x.get("value") or ""))
+        elif x:
+            out.append(str(x))
+    text = "\n".join(t for t in out if t.strip()).strip()
+    text = re.sub(r"```\w*\n?", "", text).strip()
+    return (text[:3000] if text else f"no type information for {name}") + "\n(from the language server)"
+
+
+def _calls(c, params: dict, action: str, root: Path, name: str) -> str:
+    """Who calls it (incoming) or what it calls (outgoing): the server's
+    call hierarchy."""
+    items = c.request("textDocument/prepareCallHierarchy", params)
+    if not items:
+        return f"the language server can't build a call hierarchy for {name}"
+    method = "callHierarchy/incomingCalls" if action == "callers" else "callHierarchy/outgoingCalls"
+    res = c.request(method, {"item": items[0]}) or []
+    lines = []
+    for call in res[:MAX_LINES]:
+        it = call.get("from") if action == "callers" else call.get("to")
+        if not it:
+            continue
+        rel = _rel(it.get("uri", ""), root)
+        n = ((it.get("selectionRange") or it.get("range") or {}).get("start") or {}).get("line", 0)
+        lines.append(f"{rel}:{n + 1}: {it.get('name')}"
+                     + (f"  ({len(call.get('fromRanges') or [])} call site(s))"
+                        if call.get("fromRanges") else ""))
+    if not lines:
+        return (f"nothing calls {name}" if action == "callers" else f"{name} calls nothing") + \
+            " (language server)"
+    return ("called by:\n" if action == "callers" else "calls:\n") + "\n".join(lines) + \
+        "\n(from the language server)"
 
 
 def register(mediator: Mediator, root: Path, dispatch: dict) -> None:

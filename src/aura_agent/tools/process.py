@@ -281,6 +281,9 @@ class Proc:
         self.partial = ""             # The unfinished last line (a prompt)
         self.last_out = time.monotonic()
         self.prompt_told = ""         # The prompt already reported to the model
+        self.no_input = False         # Moved here from run_command: no keyboard
+        self.watches: list[tuple[re.Pattern, str]] = []   # (pattern, as given)
+        self.watch_hits: list[str] = []                   # Matched lines not yet told
 
     def running(self) -> bool:
         if self.exit_code is None and self.popen.poll() is not None:
@@ -304,7 +307,10 @@ class Proc:
 
     def type_in(self, text: str) -> None:
         data = text.encode("utf-8")
-        if self.fd is not None:
+        wfd = getattr(self.popen, "wfd", None)
+        if wfd is not None:
+            os.write(wfd, data)                 # Windows terminal: its own input
+        elif self.fd is not None:
             os.write(self.fd, data)
         else:
             self.popen.stdin.write(data)
@@ -540,6 +546,40 @@ class Registry:
         return (f"still running but not ready after {timeout:.0f}s (waiting for {what}) — "
                 "check its output with process(action='output')", False)
 
+    # -- a run_command past its time limit, moved here instead of killed
+    def taker(self) -> "_Taker":
+        return _Taker(self)
+
+    def adopt(self, popen, out_path: Path, err_path: Path, job, cmd: str,
+              waited: float) -> str:
+        """Take over a running command (sandbox_os.run_tree on its time
+        limit). Returns what to tell the model, or "" to decline (the list
+        is full — then it is stopped as before)."""
+        running = [x for x in self.procs.values() if x.running()]
+        try:
+            from ..options import get as _opt
+            cap = int(_opt("background.max_running"))
+        except Exception:                            # noqa: BLE001
+            cap = MAX_RUNNING
+        if len(running) >= cap:
+            return ""
+        pid_ = self._remember()
+        self.dir.mkdir(parents=True, exist_ok=True)
+        log = self.dir / f"{pid_}.log"
+        pr = Proc(pid_, _short(cmd), cmd, popen, log, False, None, job,
+                  "moved here from run_command")
+        pr.no_input = True
+        self.procs[pid_] = pr
+        self._remember(pr)
+        threading.Thread(target=_follow, args=(pr, [out_path, err_path]), daemon=True).start()
+        time.sleep(0.3)                              # Let the follower catch up
+        lines = _scrub(pr.new_lines())
+        return (f"still running after {waited:.0f}s — moved to the background as {pid_} "
+                f"'{pr.name}' (pid {pr.pid}), not stopped. You are told when it ends; "
+                f"process(action='output'|'wait'|'stop', id='{pid_}') reads, waits for or "
+                f"stops it."
+                + ("\noutput so far:\n" + _fit(lines[-40:]) if lines else "\n(no output yet)"))
+
     # -- the other actions
     def find(self, pid_: str) -> Proc:
         p = self.procs.get(pid_) or next((x for x in self.procs.values() if x.name == pid_), None)
@@ -636,6 +676,47 @@ class Registry:
         return f"stopped {p.id} '{p.name}' (exit {p.exit_code})" + \
             ("\nlast lines:\n" + "\n".join(last) if last else "")
 
+    def watch(self, pid_: str, text: str, stop: bool = False) -> str:
+        """Tell the model whenever a new output line matches `text` (a regular
+        expression).
+        """
+        p = self.find(pid_)
+        if stop:
+            n = len(p.watches)
+            p.watches = [w for w in p.watches if w[1] != text] if text else []
+            return f"{p.id}: stopped watching" + (f" for {text!r}" if text else f" ({n})")
+        if not text:
+            raise Violation("process watch: give for={'text': 'regular expression'}")
+        try:
+            rx = re.compile(text)
+        except re.error as e:
+            raise Violation(f"process watch: {text!r} is not a valid regular expression ({e})")
+        if not p.running():
+            return f"{p.id} has already ended (exit {p.exit_code}) — nothing to watch"
+        p.watches.append((rx, text))
+        return (f"watching {p.id} '{p.name}' for {text!r} — you are told each time a new line "
+                "matches (and when it ends); carry on with other work meanwhile")
+
+    def watch_untold(self) -> list[tuple[Proc, list[str]]]:
+        out = []
+        for p in self.procs.values():
+            with p.lock:
+                hits, p.watch_hits = p.watch_hits, []
+            if hits:
+                out.append((p, hits))
+        return out
+
+    def news(self) -> bool:
+        """Anything the model hasn't been told yet: an end, a question, a
+        watched line (an idle chat wakes for it)."""
+        for p in self.procs.values():
+            if p.watch_hits or (not p.reported and not p.running()):
+                return True
+            q = p.waiting_prompt()
+            if q and q != p.prompt_told:
+                return True
+        return False
+
     def prompts_untold(self) -> list[tuple[Proc, str]]:
         out = []
         for p in self.procs.values():
@@ -649,6 +730,10 @@ class Registry:
         p = self.find(pid_)
         if not p.running():
             return f"{p.id} is not running (exit {p.exit_code})"
+        if p.no_input:
+            return (f"{p.id} was started by run_command, which gives a program no keyboard — "
+                    "it can't be typed into. For a program that asks questions, start it "
+                    "with process_start.")
         q = p.waiting_prompt() or (p.partial.strip() if p.partial else "")
         if q and _SECRET_PROMPT.search(q):
             return (f"refused: {p.id} is asking for a secret ({q!r}). Aura never types "
@@ -699,6 +784,14 @@ _SECRET_PROMPT = re.compile(r"\b(password|passphrase|pass code|passcode|token|se
 QUIET_FOR_PROMPT = 1.0    # Seconds without output before a question counts as waiting
 
 
+def _windows_terminal_on() -> bool:
+    try:
+        from ..options import get as _opt
+        return bool(_opt("background.windows_terminal"))
+    except Exception:                                # noqa: BLE001
+        return True
+
+
 def _spawn(cmd: str, workspace: Path, notebook: Path, network: bool,
            proxy_env: dict | None = None, port: bool = False):
     """Start in its own process group, output merged, in the OS sandbox like
@@ -742,6 +835,15 @@ def _spawn(cmd: str, workspace: Path, notebook: Path, network: bool,
             raise Violation("refused: sandbox.required is on and this program can't run "
                             "in a sandbox here" + (f" ({why})" if why else
                                                    f" ({SO.describe()})"))
+        # a real terminal (ConPTY) when this Windows has one and the setting
+        # is on: the program prints as it goes and shows its questions
+        if _windows_terminal_on():
+            from .. import conpty
+            cp = conpty.spawn(cmd, str(workspace), env)
+            if cp is not None:
+                return cp, ("sandbox: none on Windows — a job object; a real terminal"
+                            + ("; network through Aura's proxy for programs that use the "
+                               "proxy setting (not enforced)" if sites else "")), cp.fd
         kw = dict(cwd=str(workspace), env=env, stdout=subprocess.PIPE,
                   stderr=subprocess.STDOUT, stdin=subprocess.PIPE, bufsize=0,
                   creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP
@@ -802,12 +904,95 @@ def _spawn(cmd: str, workspace: Path, notebook: Path, network: bool,
     return pop, note, master
 
 
+def _keep(p: "Proc", line: str) -> None:
+    """A finished output line: into memory (the caller holds p.lock) and, if
+    it matches something watched, onto the list the model is told about."""
+    p.lines.append(line)
+    p.total += 1
+    for rx, _text in p.watches:
+        if rx.search(line):
+            if len(p.watch_hits) < 50:
+                p.watch_hits.append(line[:300])
+            break
+
+
+class _Taker:
+    """What run_command hands to sandbox_os.run_tree (HANDOFF): where its
+    output files go, and who takes the command over on its time limit."""
+
+    def __init__(self, reg: "Registry"):
+        self.reg = reg
+        self.dir = reg.dir / "commands"
+
+    def adopt(self, popen, out_path, err_path, job, cmd, waited) -> str:
+        return self.reg.adopt(popen, out_path, err_path, job, cmd, waited)
+
+
+def _follow(p: Proc, paths: list[Path]) -> None:
+    """Reader thread for a command moved here from run_command: it writes to
+    files (stdout, stderr), so follow them as they grow — whole lines into
+    memory and the log, like _pump — until it ends, then remove them."""
+    import codecs
+    decs = [codecs.getincrementaldecoder("utf-8")(errors="replace") for _ in paths]
+    parts = ["" for _ in paths]
+    handles = []
+    for path in paths:
+        try:
+            handles.append(open(path, "rb"))
+        except OSError:
+            handles.append(None)
+    try:
+        with open(p.log, "a", encoding="utf-8") as logf:
+            while True:
+                ended = p.popen.poll() is not None
+                got = False
+                for i, h in enumerate(handles):
+                    if h is None:
+                        continue
+                    chunk = h.read(65536)
+                    if not chunk:
+                        continue
+                    got = True
+                    text = decs[i].decode(chunk).replace("\r\n", "\n").replace("\r", "\n")
+                    with p.lock:
+                        p.last_out = time.monotonic()
+                        *done, parts[i] = (parts[i] + text).split("\n")
+                        for line in done:
+                            _keep(p, line)
+                            logf.write(line + "\n")
+                        p.partial = parts[i] if len(parts[i]) <= PARTIAL_MAX else ""
+                logf.flush()
+                if ended and not got:
+                    break
+                if not got:
+                    time.sleep(0.2)
+            with p.lock:
+                for rest in parts:
+                    if rest:
+                        _keep(p, rest)
+                        logf.write(rest + "\n")
+                p.partial = ""
+    except Exception:                                # noqa: BLE001
+        pass
+    finally:
+        p.running()
+        for h, path in zip(handles, paths):
+            try:
+                if h is not None:
+                    h.close()
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def _pump(p: Proc) -> None:
     """Reader thread: output as it comes — whole lines into memory and the
     log, the unfinished last line kept as `partial` (a prompt has no
     newline: reading by lines would never show it)."""
     import codecs
+    from ..conpty import strip_vt
     dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    vt = bool(getattr(p.popen, "vt", False))
     try:
         with open(p.log, "a", encoding="utf-8") as f:
             while True:
@@ -819,7 +1004,12 @@ def _pump(p: Proc) -> None:
                     break                               # The pty closes with the child
                 if not chunk:
                     break
-                text = dec.decode(chunk).replace("\r\n", "\n").replace("\r", "\n")
+                text = dec.decode(chunk)
+                if vt:
+                    text = strip_vt(text)               # A terminal's drawing codes out
+                    if not text:
+                        continue                        # Only codes (cursor shown…): no output
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
                 with p.lock:
                     p.last_out = time.monotonic()
                     buf = p.partial + text
@@ -828,14 +1018,12 @@ def _pump(p: Proc) -> None:
                         done.append(p.partial)
                         p.partial = ""
                     for line in done:
-                        p.lines.append(line)
-                        p.total += 1
+                        _keep(p, line)
                         f.write(line + "\n")
                 f.flush()
             if p.partial:
                 with p.lock:
-                    p.lines.append(p.partial)
-                    p.total += 1
+                    _keep(p, p.partial)
                     f.write(p.partial + "\n")
                     p.partial = ""
     except Exception:                                # noqa: BLE001
@@ -897,7 +1085,11 @@ def register(mediator: Mediator, dispatch: dict, notebook: Path, workspace: Path
             return reg.wait(pid_, w, float(args.get("timeout") or 60))
         if action == "stop":
             return reg.stop(pid_)
-        raise Violation("process action: list | output | wait | stop")
+        if action in ("watch", "unwatch"):
+            w = args.get("for") or {}
+            text = w.get("text") if isinstance(w, dict) else str(w)
+            return reg.watch(pid_, str(text or ""), stop=action == "unwatch")
+        raise Violation("process action: list | output | wait | watch | unwatch | stop")
 
     # starting runs a command: gated exactly like run_command (target,
     # grade, pack limits — see SHELL_TOOLS)

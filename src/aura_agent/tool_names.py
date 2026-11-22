@@ -19,6 +19,7 @@ RUN_CHECKS = "run_checks"
 TOOLS_FIND = "tools_find"
 WEB_SEARCH = "web_search"
 SEARCH_FILES = "search_files"
+LOCATE = "locate"
 PROCESS_START = "process_start"
 PROCESS = "process"
 PROCESS_INPUT = "process_input"
@@ -29,7 +30,8 @@ HISTORY_SEARCH = "history_search"
 SHELL_TOOLS = frozenset({RUN_COMMAND, PROCESS_START})
 MCP_PREFIX = "mcp__"
 
-FILE_WRITERS = frozenset({WRITE_FILE, EDIT_FILE})
+NOTEBOOK_EDIT = "notebook_edit"
+FILE_WRITERS = frozenset({WRITE_FILE, EDIT_FILE, NOTEBOOK_EDIT})
 
 # 2.5: read-only for grading (the command it runs is gated as run_command),
 # but its output differs every run — the proof check never replays it

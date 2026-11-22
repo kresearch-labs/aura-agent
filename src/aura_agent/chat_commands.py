@@ -668,7 +668,7 @@ def _profile(ctx, parts, line):
         return Result()
     profiles = list_profiles()
     if not profiles:
-        ui.info("no model setups — `aura setup` makes one")
+        ui.info("no model setups yet — say: set up a model and I'll make one")
         return Result()
     act = active_name()
     opts = [(n, n, f"{c.get('model', '?')} · {c.get('base_url', '?')}", n == act)
@@ -691,7 +691,7 @@ def _connect(ctx, parts, line):
     else:
         rows = list_connectable()
         if not rows:
-            ui.info("no model setups — `aura setup` makes one")
+            ui.info("no model setups yet — say: set up a model and I'll make one")
             return Result()
         opts = [(name, name, f"{cfg.get('model', '?')} · {status}",
                  name == getattr(ctx.profile, "name", None))
@@ -1198,12 +1198,26 @@ def _team(ctx, parts, line):
     if not teams_present():
         ui.info("Aura Teams isn't part of this version of Aura.")
         return Result()
+    from . import teams as _T_FLAG
+    if not _T_FLAG.enabled():
+        # Teams off until set up — one sentence, no other signs
+        ui.info("Teams isn't set up — say: set up Teams")
+        return Result()
     from .cli import build_parser, cmd_teams
     from . import teams_ui
     rest = parts[1:]
     if rest[:2] == ["chat", "open"] or rest == ["chat"]:
-        from . import teams_chat as CH
-        ui.info(CH.open_for_me(say=ui.info))
+        # The chat lives in the team page now (removed the old standalone LAN
+        # chat server) — the browser opens the hub at its chat hash
+        from . import teams as _T2
+        cfg = _T2.load_config()
+        url = (cfg.get("hub_url") or "").rstrip("/")
+        if not url:
+            ui.info("Teams isn't connected yet — say: set up Teams")
+            return Result()
+        import webbrowser
+        webbrowser.open(f"{url}/team/#/chat")
+        ui.info(f"the team's chat opened in your browser ({url}/team/#/chat) — sign in there")
         return Result()
     if rest[:2] == ["wire", "fix"]:
         from . import teams_wiring as W
@@ -1255,8 +1269,9 @@ def _team(ctx, parts, line):
     import getpass
     keep = (builtins.input, getpass.getpass)
     if ctx.extra.get("chat_screen"):
-        # the command's questions as cards; a token typed hidden
-        builtins.input = lambda prompt="": ctx.ask(str(prompt))
+        # The command's questions as cards; a token typed hidden. a team
+        # question carries the [team] mark, like teams_run.ask's
+        builtins.input = lambda prompt="": ctx.ask("[team] " + str(prompt))
         secret = ctx.extra.get("ask_secret")
         getpass.getpass = (lambda prompt="Password: ", stream=None: secret(str(prompt))) \
             if secret else keep[1]
@@ -1277,7 +1292,7 @@ def _decision(ctx, parts, line):
     from . import teams_run as TR
     text = " ".join(parts[1:]).strip()
     if not TR.active():
-        ui.info("not connected to a team hub — `aura teams connect`")
+        ui.info("not connected to a team hub — say: connect my team, and I'll do it")
     elif not text:
         ui.info("usage: /decision <what was decided>")
     else:

@@ -1,0 +1,31 @@
+{
+  "Me": {
+    "title": "Me",
+    "type": "object",
+    "properties": {
+      "me": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "display": { "type": "string" },
+          "team_role": { "type": "string" },
+          "global_role": { "type": "string" },
+          "must_change": { "type": "boolean" }
+        },
+        "required": ["id", "name", "team_role", "global_role", "must_change"]
+      }
+    },
+    "required": ["me"]
+  },
+  "Health": {
+    "title": "Health",
+    "type": "object",
+    "properties": {
+      "ok": { "type": "boolean" },
+      "run_id": { "type": "string" },
+      "uptime": { "type": "number" }
+    },
+    "required": ["ok"]
+  }
+}

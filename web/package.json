@@ -1,0 +1,50 @@
+{
+  "private": true,
+  "name": "aura-teams-web",
+  "type": "module",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "types": "node scripts/gen-types.mjs",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "contrast": "node scripts/contrast.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@lucide/svelte": "1.70.0",
+    "@playwright/test": "^1.64.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/d3-force": "^3.0.10",
+    "@types/mdast": "^4.0.4",
+    "@types/node": "26.6.6",
+    "@vitest/browser-playwright": "^4.1.12",
+    "json-schema-to-typescript": "^16.0.0",
+    "svelte": "~5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "@dicebear/avataaars": "9.4.2",
+    "@dicebear/core": "9.4.3",
+    "@dicebear/lorelei": "9.4.2",
+    "bits-ui": "^2.20.3",
+    "d3-force": "3.0.0",
+    "lucide-svelte": "^1.0.1",
+    "mdast-util-from-markdown": "^2.1.0",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark": "^4.0.3",
+    "micromark-extension-gfm": "^3.0.0",
+    "shiki": "^4.6.0",
+    "tailwindcss": "^4.3.3",
+    "virtua": "^0.54.1"
+  }
+}

@@ -73,9 +73,15 @@ def _ignored(rel: str, is_dir: bool, pats: list[tuple[str, bool]]) -> bool:
 def _walk(root: Path, sub: Path):
     """Project files under sub (relative posix paths), skipping what ripgrep
     would skip."""
+    from ..stopping import walk
+    if Path(sub).is_file():                 # One file asked for: just that file
+        yield Path(sub).resolve().relative_to(Path(root).resolve()).as_posix()
+        return
     pats = _gitignore(root)
-    for dp, dns, fns in os.walk(sub):
+    from ..stopping import progress
+    for dp, dns, fns in walk(sub):          # A user's stop ends it
         d = Path(dp)
+        progress(f"searching {d}")
         rel_d = d.relative_to(root).as_posix()
         rel_d = "" if rel_d == "." else rel_d
         dns[:] = [n for n in dns if n not in SKIP_DIRS and not n.startswith(".")
@@ -103,7 +109,8 @@ def _globs_ok(rel: str, globs: list[str]) -> bool:
 
 # --------------------------------------------------------------- content --
 def _content_rg(root: Path, sub: str, pattern: str, literal: bool, case: str,
-                globs: list[str], context: int, cap: int) -> list[dict]:
+                globs: list[str], context: int, cap: int,
+                multiline: bool = False) -> list[dict]:
     # No-require-git: honour.gitignore in any folder, not only inside a git
     # repository --hidden + "!.*/": look at hidden FILES (.env …) and skip
     # hidden FOLDERS, like the built-in search — ripgrep skips dot-files by
@@ -119,10 +126,13 @@ def _content_rg(root: Path, sub: str, pattern: str, literal: bool, case: str,
         cmd += ["--glob", f"!{d}/"]
     if context:
         cmd += ["-C", str(context)]
+    if multiline:
+        cmd += ["-U", "--multiline-dotall"]         # A match may span lines
     cmd += ["-e", pattern, "--", sub or "."]
+    from ..stopping import run as _run_stoppable
     try:
-        r = subprocess.run(cmd, cwd=str(root), capture_output=True, timeout=30,
-                           encoding="utf-8", errors="replace")
+        # ends at once when the user stops the task (ripgrep is killed)
+        r = _run_stoppable(cmd, cwd=str(root), timeout=30, what="search_files")
     except subprocess.TimeoutExpired:
         raise Violation("search took over 30 s — narrow it with path= or glob=")
     if r.returncode == 2 and not r.stdout:
@@ -147,10 +157,13 @@ def _content_rg(root: Path, sub: str, pattern: str, literal: bool, case: str,
 
 
 def _content_py(root: Path, sub: Path, pattern: str, literal: bool, case: str,
-                globs: list[str], context: int, cap: int) -> list[dict]:
+                globs: list[str], context: int, cap: int,
+                multiline: bool = False) -> list[dict]:
     flags = 0
     if case == "insensitive" or (case == "smart" and pattern == pattern.lower()):
         flags |= re.IGNORECASE
+    if multiline:
+        flags |= re.DOTALL | re.MULTILINE
     rx = re.compile(re.escape(pattern) if literal else pattern, flags)
     hits: list[dict] = []
     matches = 0
@@ -166,8 +179,26 @@ def _content_py(root: Path, sub: Path, pattern: str, literal: bool, case: str,
             continue
         if b"\x00" in data[:4096]:
             continue                                  # Binary
-        lines = data.decode("utf-8", errors="replace").splitlines()
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
         want: dict[int, bool] = {}
+        if multiline:
+            # a match may span lines: it is shown at the line it starts on
+            starts = sorted({text.count("\n", 0, mm.start()) for mm in rx.finditer(text)})
+            for i in starts:
+                if i >= len(lines):
+                    continue
+                want[i] = True
+                for j in range(max(0, i - context), min(len(lines), i + context + 1)):
+                    want.setdefault(j, False)
+                matches += 1
+                if matches >= cap:
+                    break
+            for i in sorted(want):
+                hits.append({"file": rel, "line": i + 1, "text": lines[i][:400], "match": want[i]})
+            if matches >= cap:
+                break
+            continue
         for i, line in enumerate(lines):
             if rx.search(line):
                 want[i] = True
@@ -295,6 +326,36 @@ def matches_of(hits: list[dict]) -> int:
     return sum(1 for h in hits if h["match"])
 
 
+def _summary(pattern: str, hits: list[dict], show: str, rel_sub: str, note: str,
+             cap: int) -> str:
+    """show=files: the files that match, most matches first; show=count: how
+    many matches in all, and per file. Secret files are counted, not named."""
+    per: dict[str, int] = {}
+    for h in hits:
+        if h["match"]:
+            per[h["file"]] = per.get(h["file"], 0) + 1
+    hidden = [f for f in per if _secret(f)]
+    for f in hidden:
+        per.pop(f)
+    where = rel_sub if rel_sub != "." else "the project"
+    total = sum(per.values())
+    if not per:
+        return f"no match for {pattern!r}{note} in {where}"
+    capped = " (stopped counting at the limit)" if total >= cap else ""
+    rows = sorted(per.items(), key=lambda kv: (-kv[1], kv[0]))
+    if show == "count":
+        head = (f"{total} match{'es' if total != 1 else ''} in {len(per)} "
+                f"file{'s' if len(per) != 1 else ''} in {where}{capped}{note}")
+        body = "\n".join(f"{n:6d}  {f}" for f, n in rows[:200])
+    else:
+        head = (f"{len(per)} file{'s' if len(per) != 1 else ''} match"
+                f"{'' if len(per) != 1 else 'es'} {pattern!r} in {where}{capped}{note}")
+        body = "\n".join(f"{f}  ({n})" for f, n in rows[:200])
+    more = f"\n… and {len(rows) - 200} more files" if len(rows) > 200 else ""
+    secret = f"\n({len(hidden)} secret file(s) matched and are not shown)" if hidden else ""
+    return f"{head}\n{body}{more}{secret}"
+
+
 def search_files(root: Path, args: dict) -> str:
     from .fs import _base, _resolve_in_root
     pattern = str(args.get("pattern") or args.get("query") or "")
@@ -327,17 +388,28 @@ def search_files(root: Path, args: dict) -> str:
         context = 0
     rel_sub = sub.relative_to(root.resolve()).as_posix() if sub != root.resolve() else "."
     engine = "ripgrep" if _rg() else "built-in search"
-    try:
-        hits = (_content_rg(root, rel_sub, pattern, literal, case, globs, context, limit)
+    show = str(args.get("show") or "lines").lower()
+    if show not in ("lines", "files", "count"):
+        raise ValueError("show is lines, files or count")
+    multiline = bool(args.get("multiline"))
+    # which files / how many: every match counts, no lines around them
+    cap = 20_000 if show != "lines" else limit
+    if show != "lines":
+        context = 0
+
+    def _find(lit: bool) -> list[dict]:
+        return (_content_rg(root, rel_sub, pattern, lit, case, globs, context, cap, multiline)
                 if _rg() else
-                _content_py(root, sub, pattern, literal, case, globs, context, limit))
+                _content_py(root, sub, pattern, lit, case, globs, context, cap, multiline))
+    try:
+        hits = _find(literal)
     except ValueError:
         if literal:
             raise
         literal, note = True, " (searched as plain text — the pattern didn't work as a regular expression)"
-        hits = (_content_rg(root, rel_sub, pattern, literal, case, globs, context, limit)
-                if _rg() else
-                _content_py(root, sub, pattern, literal, case, globs, context, limit))
+        hits = _find(literal)
+    if show != "lines":
+        return _summary(pattern, hits, show, rel_sub, note, cap)
     # for a plain name: find where it is defined too, even past the cap
     drx = _def_rx(pattern) if not literal or re.fullmatch(r"[\w.]+", pattern) else None
     if drx is not None and matches_of(hits) >= limit:
@@ -351,9 +423,9 @@ def search_files(root: Path, args: dict) -> str:
     hits = [h for h in hits if h["file"] not in hidden]
     matches = sum(1 for h in hits if h["match"])
     if not matches:
+        # How many files were searched.
         try:
-            n_files = sum(1 for p in sub.rglob("*") if p.is_file()
-                          and not any(x in SKIP_DIRS for x in p.relative_to(sub).parts))
+            n_files = sum(1 for _ in _walk(root, sub))
         except OSError:
             n_files = 0
         msg = (f"no match for {pattern!r}{note} in {rel_sub if rel_sub != '.' else 'the project'}"

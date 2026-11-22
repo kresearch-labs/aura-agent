@@ -41,11 +41,24 @@ SCHEMAS: dict[str, dict] = {'delegate': {'type': 'function',
                                               'required': ['helper']}}},
  'list_files': {'type': 'function',
                 'function': {'name': 'list_files',
-                             'description': 'List files under a path in the project.',
+                             'description': (
+                                 'List the files and folders under a path in the project '
+                                 '(dependency and build folders are skipped and named). '
+                                 'depth=1 shows only that folder; sort=newest shows what '
+                                 'changed last; details=true adds sizes and dates.'),
                              'parameters': {'type': 'object',
-                                            'properties': {'path': {'type': 'string',
-                                                                    'description': 'relative '
-                                                                                   'path'}},
+                                            'properties': {
+                                                'path': {'type': 'string',
+                                                         'description': 'relative path'},
+                                                'depth': {'type': 'integer',
+                                                          'description': 'levels down (1 = '
+                                                                         'only this folder); '
+                                                                         'default all'},
+                                                'sort': {'type': 'string',
+                                                         'enum': ['name', 'newest', 'largest']},
+                                                'details': {'type': 'boolean',
+                                                            'description': 'sizes and '
+                                                                           'last-changed times'}},
                                             'required': []}}},
  'read_file': {'type': 'function',
                'function': {'name': 'read_file',
@@ -57,8 +70,15 @@ SCHEMAS: dict[str, dict] = {'delegate': {'type': 'function',
                                            'required': ['path']}}},
  'write_file': {'type': 'function',
                 'function': {'name': 'write_file',
-                             'description': 'Write a file (creates parents). '
-                                            'Snapshotted first.',
+                             'description': (
+                                 'Create a new file, or replace a whole file with new '
+                                 'content (folders are made as needed; the old version '
+                                 'is kept for undo). To change part of a file use '
+                                 'edit_file. An existing file must have been read in '
+                                 'this chat and be unchanged since, or the write is '
+                                 'refused — read it, then write. Write the complete '
+                                 'content: nothing is merged. Never create files with '
+                                 'run_command (echo >, Set-Content).'),
                              'parameters': {'type': 'object',
                                             'properties': {'path': {'type': 'string'},
                                                            'content': {'type': 'string'}},
@@ -125,13 +145,37 @@ SCHEMAS: dict[str, dict] = {'delegate': {'type': 'function',
                               'parameters': {'type': 'object', 'properties': {}}}},
  'run_command': {'type': 'function',
                  'function': {'name': 'run_command',
-                              'description': 'Run a shell command (scope-checked, '
-                                             'timeout). Its network reaches only this '
-                                             "project's allowed sites.",
+                              'description': (
+                                  'Run a shell command in the project folder: builds, '
+                                  'tests, git, package installs, the project\'s own scripts. '
+                                  'Not for what other tools do better — reading a file '
+                                  '(read_file), changing one (edit_file / write_file), '
+                                  'searching code (search_files), finding files on the '
+                                  'computer (locate), web pages (web_crawl).\n'
+                                  'It runs to the end and returns the exit code and output '
+                                  '(long output: start and end, the rest saved — '
+                                  'read_file the saved path). Past its time limit '
+                                  '(timeout, seconds) a command is not killed: it moves to '
+                                  'the background as a process with an id — you are told '
+                                  'when it ends, and process reads, waits for or stops it. '
+                                  'For a server or watcher that should keep running, use '
+                                  'process_start. A command gets no keyboard: give '
+                                  'flags that answer for it (--yes, -y, '
+                                  '--non-interactive); a program that must ask questions '
+                                  'goes through process_start + process_input. No pagers '
+                                  'or colours. The network reaches only this project\'s '
+                                  'allowed sites unless network=true (the user is asked). '
+                                  'Each call is a fresh shell: cd does not carry over.'),
                               'parameters': {'type': 'object',
                                              'properties': {'cmd': {'type': 'string'},
-                                                            'host': {'type': 'string'},
-                                                            'timeout': {'type': 'number'},
+                                                            'host': {'type': 'string',
+                                                                     'description': 'the host/site '
+                                                                     'the command reaches (for '
+                                                                     'the scope check)'},
+                                                            'timeout': {'type': 'number',
+                                                                        'description': 'seconds '
+                                                                        'before it moves to the '
+                                                                        'background (default 300)'},
                                                             'network': {'type': 'boolean',
                                                                         'description': 'full '
                                                                         'network past the allowed '
@@ -421,19 +465,34 @@ SCHEMAS["web_search"] = {"type": "function", "function": {
 # Line tags and the tolerant edit
 SCHEMAS["read_file"] = {"type": "function", "function": {
     "name": "read_file",
-    "description": ("Read a text file. Lines come as N:tag|text — an edit can "
-                    "point at N:tag."),
+    "description": (
+        "Read a file before you change it or say what is in it. Text in any common "
+        "encoding comes as N:tag|text lines — edit_file can point at N:tag. Also reads "
+        "PDFs (pages='1-5'), notebooks (numbered cells), Word, Excel (sheet=) and "
+        "PowerPoint files; for images use view_image. Up to 2000 lines per call: when "
+        "more is left the answer ends with [… more with offset=N] — read on only if you "
+        "need it. Use this, not run_command with cat / type / head / Get-Content. "
+        "To find which file holds something, search_files first."),
     "parameters": {"type": "object", "properties": {
-        "path": {"type": "string"}, "offset": {"type": "integer"},
-        "limit": {"type": "integer"}}, "required": ["path"]}}}
+        "path": {"type": "string"},
+        "offset": {"type": "integer", "description": "first line to show (1 = top)"},
+        "limit": {"type": "integer", "description": "how many lines (default 2000)"},
+        "pages": {"type": "string", "description": "PDF pages, like 3, 1-5 or 2,4-6"},
+        "sheet": {"type": "string", "description": "Excel: one sheet by name"}},
+        "required": ["path"]}}}
 SCHEMAS["edit_file"] = {"type": "function", "function": {
     "name": "edit_file",
-    "description": ("Change part of a file: old_string -> new_string (small "
-                    "whitespace differences are tolerated and reported; two "
-                    "possible places are refused), or lines='12:a3' / "
+    "description": ("Change part of a file — the right tool for any change to an "
+                    "existing file (write_file is for new files or full rewrites). "
+                    "old_string -> new_string (small whitespace differences are "
+                    "tolerated and reported; two possible places are refused — add "
+                    "more of the surrounding text), or lines='12:a3' / "
                     "'12:a3-15:0e' from read_file -> new_string, or "
                     "insert_after='12:a3' ('0' = top). edits=[...] applies "
-                    "several at once, all or nothing."),
+                    "several at once, all or nothing. Refused when the file changed "
+                    "since you read it: read it again. After the edit you are told "
+                    "about syntax errors and NEW language-server errors — fix those "
+                    "before moving on. Never edit with run_command (sed, echo >)."),
     "parameters": {"type": "object", "properties": {
         "path": {"type": "string"},
         "old_string": {"type": "string"},
@@ -446,13 +505,99 @@ SCHEMAS["edit_file"] = {"type": "function", "function": {
         "required": ["path"]}}}
 
 # Find text in files, or files by name
+SCHEMAS["recall"] = {"type": "function", "function": {
+    "name": "recall",
+    "description": (
+        "Look back in THIS chat, word for word: what the user told you earlier (about "
+        "themselves, their plans, choices, things they shared) and what you did. Use it "
+        "first for any question about earlier in the chat — that is here, not in the "
+        "project's files. A long chat is kept in parts: you work from the newest one; "
+        "older parts are on disk, unchanged. Do not guess a detail you no longer see, "
+        "and do not assume an older fact still holds — recall it. query=words: searches "
+        "every exchange's full words (names, numbers, plain words); if nothing comes "
+        "back, try other words before saying it was never mentioned. seq=N: the exact "
+        "messages around that point. part=N: that part's index. No arguments: the "
+        "bookmarks of every part. For other chats use history_search."),
+    "parameters": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "words to find, e.g. 'release folder name'"},
+        "seq": {"type": "integer", "description": "a #N from an index line"},
+        "part": {"type": "integer"},
+        "window": {"type": "integer", "description": "messages around seq (default 6)"}},
+        "required": []}}}
+
+SCHEMAS["decisions"] = {"type": "function", "function": {
+    "name": "decisions",
+    "description": (
+        "This chat's decisions — what is true NOW. They go with every message, newest "
+        "first, and win over anything older in the chat. add: a decision the user made "
+        "or agreed (one line: 'no zips — tests go through the repos'). replace: a new "
+        "decision that replaces an old one (replaces=<id>); the old one stays, marked "
+        "replaced, and decisions that depend on it are flagged to check. Use depends_on "
+        "when a decision only holds because of another. drop: it no longer applies. "
+        "list: all, with the replaced ones."),
+    "parameters": {"type": "object", "properties": {
+        "action": {"type": "string", "enum": ["list", "add", "replace", "drop"]},
+        "text": {"type": "string"},
+        "replaces": {"type": "string", "description": "id of the decision it replaces (d3)"},
+        "id": {"type": "string", "description": "for drop"},
+        "depends_on": {"type": "array", "items": {"type": "string"}}},
+        "required": ["action"]}}}
+
+SCHEMAS["notebook_edit"] = {"type": "function", "function": {
+    "name": "notebook_edit",
+    "description": (
+        "Change one cell of a Jupyter notebook (.ipynb): replace its text, add a cell "
+        "before or after it, or delete it. Read the notebook with read_file first — it "
+        "numbers the cells (1 = first). A changed code cell loses its old output until "
+        "it is run again. For any other file use edit_file."),
+    "parameters": {"type": "object", "properties": {
+        "path": {"type": "string"},
+        "cell": {"type": "integer", "description": "cell number as read_file shows it"},
+        "action": {"type": "string", "enum": ["replace", "insert_before", "insert_after", "delete"]},
+        "source": {"type": "string", "description": "the cell's new text"},
+        "cell_type": {"type": "string", "enum": ["code", "markdown"]}},
+        "required": ["path", "cell"]}}}
+
+SCHEMAS["locate"] = {"type": "function", "function": {
+    "name": "locate",
+    "description": (
+        "Find files and folders anywhere on this computer by NAME and DATE, and what the "
+        "user worked on recently — it never opens a file, so it is fast. Use it whenever "
+        "the user asks where something is, or what they were working on, and the place "
+        "is not known. Never search the disk with run_command (dir /s, find /, "
+        "Get-ChildItem -Recurse) — that is slow and can't see the computer's index.\n"
+        "Order it follows: `where` if given, else the folder you work in; if nothing is "
+        "found there, the whole computer: the projects Aura worked in, the computer's "
+        "recently-used list, its file index (Windows Search / Everything / Spotlight / "
+        "locate), then a time-limited walk.\n"
+        "No name = recent activity (the last 7 days unless since= says otherwise). To "
+        "search inside files use search_files (project) instead."),
+    "parameters": {"type": "object", "properties": {
+        "name": {"type": "string", "description":
+                 "words in the name (all must appear), or a pattern like *report*.pdf; "
+                 "leave out to list recent activity"},
+        "where": {"type": "string", "description": "a folder to search first (the user named it)"},
+        "everywhere": {"type": "boolean", "description":
+                       "skip the work folder and search the whole computer at once"},
+        "thorough": {"type": "boolean", "description":
+                     "also walk the whole disk even when the index already found good "
+                     "matches (slower; for every copy of something)"},
+        "since": {"type": "string", "description": "only changed within: 30m, 12h, 2d, 1w"},
+        "kind": {"type": "string", "enum": ["any", "files", "folders"]},
+        "limit": {"type": "integer", "description": "results (5-40, default 25)"}},
+        "required": []}}}
+
 SCHEMAS["search_files"] = {"type": "function", "function": {
     "name": "search_files",
     "description": ("Search the project: text inside files (a regular "
                     "expression, or literal=true) or files by name (in='names'). "
-                    "Results grouped by file, definitions first, lines as "
-                    "N:tag| (usable by edit_file). .gitignore and dependency "
-                    "folders are skipped."),
+                    "The first step to find where something is defined or used — "
+                    "before reading files one by one. Results grouped by file, "
+                    "definitions first, lines as N:tag| (usable by edit_file); "
+                    "show='files' lists only which files match, show='count' how many. "
+                    ".gitignore and dependency folders are skipped. For files outside "
+                    "the project, or by date, use locate. Use this, not run_command "
+                    "with grep / findstr / Select-String."),
     "parameters": {"type": "object", "properties": {
         "pattern": {"type": "string"},
         "in": {"type": "string", "enum": ["content", "names"]},
@@ -461,6 +606,11 @@ SCHEMAS["search_files"] = {"type": "function", "function": {
         "literal": {"type": "boolean"},
         "case": {"type": "string", "enum": ["smart", "sensitive", "insensitive"]},
         "context": {"type": "integer", "description": "lines around each match (0-5)"},
+        "show": {"type": "string", "enum": ["lines", "files", "count"],
+                 "description": "lines (default) | files: which files match, most first | "
+                                "count: how many matches in all"},
+        "multiline": {"type": "boolean",
+                      "description": "a match may span lines (. matches a line break)"},
         "limit": {"type": "integer"}},
         "required": ["pattern"]}}}
 
@@ -493,13 +643,18 @@ SCHEMAS["run_code"] = {"type": "function", "function": {
 # Code navigation (language server when installed)
 SCHEMAS["code_nav"] = {"type": "function", "function": {
     "name": "code_nav",
-    "description": ("Find where a function/class/variable is defined, where it is "
-                    "used, or list what a file defines. Uses your installed language "
-                    "server when there is one (exact, follows imports); built-in "
-                    "search otherwise."),
+    "description": ("Understand code before changing it: where a function/class/"
+                    "variable is defined, where it is used, what a file defines, its "
+                    "type and documentation (type), what implements an interface "
+                    "(implementations), who calls a function (callers) and what it "
+                    "calls (callees). Uses your installed language server when there is "
+                    "one (exact, follows imports); definition / references / callers fall "
+                    "back to built-in search otherwise. Prefer it to text search when "
+                    "a name is common or changing it could break callers."),
     "parameters": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["definition", "references", "symbols"]},
-        "name": {"type": "string", "description": "the name (definition, references)"},
+        "action": {"type": "string", "enum": ["definition", "references", "symbols", "type",
+                                              "implementations", "callers", "callees"]},
+        "name": {"type": "string", "description": "the name (every action but symbols)"},
         "path": {"type": "string", "description": "a file that uses the name (optional), "
                                                   "or the file to outline (symbols)"}},
         "required": ["action"]}}}
@@ -545,12 +700,17 @@ SCHEMAS["process_start"] = {"type": "function", "function": {
         "required": ["cmd"]}}}
 SCHEMAS["process"] = {"type": "function", "function": {
     "name": "process",
-    "description": ("Background processes: action=list | output (new lines since "
-                    "last time; tail=N for the last N) | wait (for={text} | "
-                    "{port} | {url} | 'exit', timeout) | stop (id or 'all'). "
-                    "You are told when one ends — no need to poll."),
+    "description": ("Background processes — those started with process_start, and "
+                    "run_command commands that ran past their time limit: "
+                    "action=list | output (new lines since last time; tail=N for the "
+                    "last N; grep=) | wait (for={text} | {port} | {url} | 'exit', "
+                    "timeout) | watch (for={text}: be told each time a new line matches "
+                    "— errors, 'compiled', a test result — while you do other work; "
+                    "unwatch ends it) | stop (id or 'all'). You are told when one ends, "
+                    "even while you wait for the user — don't poll output in a loop."),
     "parameters": {"type": "object", "properties": {
-        "action": {"type": "string", "enum": ["list", "output", "wait", "stop"]},
+        "action": {"type": "string",
+                   "enum": ["list", "output", "wait", "watch", "unwatch", "stop"]},
         "id": {"type": "string"},
         "tail": {"type": "integer"},
         "grep": {"type": "string"},
@@ -634,12 +794,18 @@ SCHEMAS["team_wire_check"] = {"type": "function", "function": {
     "name": "team_wire_check",
     "description": ("Prove a wiring you wrote from your RESEARCH of the app's API (official "
                     "docs, its OpenAPI, or its MCP server's tools) on the live hub. The user "
-                    "confirms; it makes one 'safe to delete' task. Returns ✓/✗/~ per "
-                    "operation — fix what fails and check again."),
+                    "confirms; it makes one 'safe to delete' task (and a second one for the "
+                    "blocked-by read) in the project the user picks, and sets a due date to "
+                    "read it back. Returns ✓/✗/~ per operation — fix what fails and check again."),
     "parameters": {"type": "object", "properties": {
         "wiring": {"type": "object", "description": "the wiring (team_wiring_format)"},
+        "project": {"type": ["integer", "string"],
+                    "description": ("the project to make the check task(s) in — its id or name. "
+                                    "ASK the user which one when the hub has several; leave it "
+                                    "out only when the user says 'any'")},
         "existing_task": {"type": "integer", "description": "only when the hub can't create tasks"}},
         "required": ["wiring"]}}}
+
 SCHEMAS["team_chat"] = {"type": "function", "function": {
     "name": "team_chat",
     "description": ("The team's people chat: open it for the user in their browser (signed "
@@ -658,15 +824,20 @@ SCHEMAS["clarify"] = {"type": "function", "function": {
     "description": ("Ask the user when the request has more than one reasonable "
                     "reading and the choice matters, or only they have the "
                     "information. Ask early, once, with choices. Don't ask what "
-                    "you can find out yourself; never ask for passwords or keys."),
+                    "you can find out yourself; never ask for passwords or keys. "
+                    "Several separate decisions at once: questions=[...] (up to 4, "
+                    "each like a single question) instead of one call per question."),
     "parameters": {"type": "object", "properties": {
         "question": {"type": "string", "description": "one clear question"},
         "options": {"type": "array", "items": {"type": "object", "properties": {
             "label": {"type": "string"}, "description": {"type": "string"}}},
                     "description": "2-6 choices (the user can always type their own)"},
         "recommended": {"type": "string", "description": "the label you'd pick"},
-        "multi": {"type": "boolean", "description": "the user may pick several"}},
-        "required": ["question"]}}}
+        "multi": {"type": "boolean", "description": "the user may pick several"},
+        "questions": {"type": "array", "items": {"type": "object"},
+                      "description": "up to 4 questions, each {question, options, "
+                                     "recommended, multi}"}},
+        "required": []}}}
 
 SCHEMAS["pblock_propose"] = {"type": "function", "function": {
     "name": "pblock_propose",
@@ -712,6 +883,10 @@ MAIN_AGENT_TOOLS: list[str] = ['delegate',
  'helper_apply',
  'list_files',
  'search_files',
+ 'locate',
+ 'notebook_edit',
+ 'recall',
+ 'decisions',
  'code_nav',
  'history_search',
  'read_file',
@@ -754,6 +929,25 @@ MAIN_AGENT_TOOLS: list[str] = ['delegate',
  'team_chat',
  'pblock_propose',
  'pblock_train',
+ 'team_hub_start',
+ 'team_people',
+ 'team_revoke',
+ 'team_rename_me',
+ 'team_use',
+ 'team_notices',
+ 'team_map',
+ 'team_import_vikunja',
+ 'team_wire_fix',
+ 'team_watch',
+ 'team_bind',
+ 'team_project',
+ 'team_members',
+ 'team_merged',
+ 'team_task_new',
+ 'team_task_assign',
+ 'team_hub_handover',
+ 'team_hub_take',
+ 'team_address',
  'get',
  'aura_update']
 

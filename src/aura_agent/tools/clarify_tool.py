@@ -157,4 +157,21 @@ def register(mediator: Mediator, dispatch: dict) -> None:
         return f"[USER ANSWER — typed by the user] {answer}"
 
     mediator.register(ToolSpec(CLARIFY, BlastRadius.READ, lambda a: None), plan_safe=True)
-    dispatch[CLARIFY] = clarify
+    def clarify_many(args) -> str:
+        """Questions=[...]: up to 4 questions in one call, asked one after another
+        with the same rules as a single question; the answers come back
+        together.
+        """
+        qs = args.get("questions")
+        if not qs:
+            return clarify(args)
+        if not isinstance(qs, list):
+            return "error: questions is a list of {question, options, recommended, multi}"
+        out = []
+        for i, item in enumerate(qs[:MAX_PER_RUN], 1):
+            item = item if isinstance(item, dict) else {"question": str(item)}
+            out.append(f"{i}. {str(item.get('question') or '').strip()}\n   → {clarify(item)}")
+        more = (f"\n(only the first {MAX_PER_RUN} were asked)" if len(qs) > MAX_PER_RUN else "")
+        return "\n".join(out) + more
+
+    dispatch[CLARIFY] = clarify_many

@@ -272,11 +272,24 @@ def trash_chat(engagement_root: Path, path: Path) -> Path:
         n += 1
     path.replace(dest)
     os.utime(dest, None)                   # The time it was deleted
+    _move_parts(path, dest)                # Its earlier parts go with it
     try:                                   # Its view (a shortcut, rebuilt when needed)
         path.with_name(path.stem + ".view.json").unlink()
     except OSError:
         pass
     return dest
+
+
+def _move_parts(src: Path, dest: Path) -> None:
+    """A chat kept in parts: its <name>.parts folder follows the chat file."""
+    from .chat_parts import parts_dir
+    a, b = parts_dir(src), parts_dir(dest)
+    if a.is_dir():
+        try:
+            a.replace(b)
+        except OSError:
+            import shutil
+            shutil.move(str(a), str(b))
 
 
 def trashed(engagement_root: Path) -> list[dict]:
@@ -319,6 +332,7 @@ def restore_chat(engagement_root: Path, ref: str) -> Path | None:
     if dest.exists():
         dest = dest.with_name(f"{dest.stem}-restored{dest.suffix}")
     src.replace(dest)
+    _move_parts(src, dest)
     return dest
 
 
@@ -334,6 +348,10 @@ def empty_trash(engagement_root: Path, older_than_days: float | None = None) -> 
                 n += 1
             except OSError:
                 pass
+            from .chat_parts import parts_dir
+            if parts_dir(s["path"]).is_dir():
+                import shutil
+                shutil.rmtree(parts_dir(s["path"]), ignore_errors=True)
     return n
 
 

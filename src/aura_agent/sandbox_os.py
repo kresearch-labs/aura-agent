@@ -263,7 +263,41 @@ class Stopped(subprocess.TimeoutExpired):
 
 # set by the chat screen when the user stops the task; a running command ends at once
 import threading as _threading
+import contextvars as _contextvars
 STOP = _threading.Event()
+# why STOP is set: "task" (Esc / Ctrl+C: the task ends) or "message" (Shift+Enter
+# while Aura works: this step ends so the user's new message is read now)
+STOP_WHY = {"why": "task"}
+# a background helper has its own stop: the user stopping the task does not
+# reach work running in its context (set once at the start of its thread)
+_DETACHED = _contextvars.ContextVar("aura_stop_detached", default=False)
+
+
+def stop_requested() -> bool:
+    """The user stopped the task — not counted inside a background helper."""
+    return STOP.is_set() and not _DETACHED.get()
+
+
+def detach_from_user_stop() -> None:
+    """Call at the start of a background helper's thread."""
+    _DETACHED.set(True)
+
+
+# A command past its time limit is moved to the background instead of being
+# killed: run_command sets HANDOFF to the process list's taker; run_tree then
+# writes the output to named files the taker can follow, and on the time limit
+# hands the running command over (adopt) and raises MovedToBackground with what
+# to tell the model. Without a taker (or with an engine's own cleanup, e.g. a
+# container) a time limit still stops it.
+HANDOFF = _contextvars.ContextVar("aura_cmd_handoff", default=None)
+
+
+class MovedToBackground(Exception):
+    """The command is still running, now as a background process."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.text = text
 
 
 def run_tree(cmd, *, shell: bool, timeout: float, cwd: str | None, env: dict,
@@ -275,53 +309,119 @@ def run_tree(cmd, *, shell: bool, timeout: float, cwd: str | None, env: dict,
     after the stop (an engine's own cleanup, e.g. a container). Returns a
     CompletedProcess whose .out_bytes is the real size of the output."""
     import tempfile
-    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
-        kw = dict(stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, cwd=cwd, env=env, shell=shell)
-        if os.name == "nt":
-            p = subprocess.Popen(cmd, **kw)
-            job = _job_for(p.pid)
-        else:
-            p = subprocess.Popen(cmd, start_new_session=True, preexec_fn=preexec_fn, **kw)
-            job = None
-        try:
-            import time as _time
-            end = _time.monotonic() + timeout
-            while True:
-                try:
-                    p.wait(timeout=max(0.01, min(0.25, end - _time.monotonic())))
-                    break
-                except subprocess.TimeoutExpired:
-                    if STOP.is_set():
-                        raise Stopped(cmd, timeout) from None
-                    if _time.monotonic() >= end:
-                        raise
-        except subprocess.TimeoutExpired:
-            if os.name == "nt":
-                _close_job(job)
-                job = None
-                p.kill()
-            else:
-                _stop_group(p)
-            p.wait()
-            if on_timeout is not None:
-                try:
-                    on_timeout()
-                except Exception:                    # noqa: BLE001
-                    pass
-            raise
-        finally:
-            if job is not None:
-                _close_job(job)                      # What it left running ends with it
-        left = False
-        if os.name != "nt":
-            try:                                     # Anything it started still there?
-                os.killpg(p.pid, 0)
-                left = True
-                _stop_group(p)
+    taker = HANDOFF.get() if on_timeout is None else None
+    if taker is not None:
+        # named files the taker can follow if the command outlives its limit
+        taker.dir.mkdir(parents=True, exist_ok=True)
+        _fo = tempfile.NamedTemporaryFile(dir=taker.dir, prefix="cmd-", suffix=".out", delete=False)
+        _fe = tempfile.NamedTemporaryFile(dir=taker.dir, prefix="cmd-", suffix=".err", delete=False)
+    else:
+        _fo, _fe = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    moved = False
+    try:
+        return _run_tree_in(cmd, shell, timeout, cwd, env, preexec_fn, on_timeout, keep,
+                            _fo, _fe, taker)
+    except MovedToBackground:
+        moved = True
+        raise
+    finally:
+        for f in (_fo, _fe):
+            try:
+                f.close()
             except OSError:
                 pass
-        out, n_out = _read_kept(fo, keep)
-        err, n_err = _read_kept(fe, keep)
+            if taker is not None and not moved:
+                try:
+                    os.unlink(f.name)
+                except OSError:
+                    pass
+
+
+def _show_last_line(fo, fe, cmd) -> None:
+    """The newest line the running command printed, shown live in the chat
+    (its output goes to named files while a taker is set)."""
+    try:
+        from .stopping import progress
+        last = ""
+        for f in (fo, fe):
+            with open(f.name, "rb") as r:
+                r.seek(0, 2)
+                n = r.tell()
+                r.seek(max(0, n - 4096))
+                tail = r.read().decode("utf-8", "replace").replace("\r", "\n")
+            lines = [ln.strip() for ln in tail.split("\n") if ln.strip()]
+            if lines:
+                last = lines[-1]
+        try:
+            from .tools.process import _short
+            c = _short(cmd if isinstance(cmd, str) else " ".join(map(str, cmd)))
+        except Exception:                            # noqa: BLE001
+            c = " ".join(str(cmd).split())
+        progress(f"$ {c[:50]}{'…' if len(c) > 50 else ''}"
+                 + (f"  ▸ {last[:200]}" if last else "  (no output yet)"))
+    except Exception:                                # noqa: BLE001 - a view, never a failure
+        pass
+
+
+def _run_tree_in(cmd, shell, timeout, cwd, env, preexec_fn, on_timeout, keep, fo, fe, taker):
+    """run_tree's body: fo/fe are the open output files."""
+    kw = dict(stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, cwd=cwd, env=env, shell=shell)
+    if os.name == "nt":
+        p = subprocess.Popen(cmd, **kw)
+        job = _job_for(p.pid)
+    else:
+        p = subprocess.Popen(cmd, start_new_session=True, preexec_fn=preexec_fn, **kw)
+        job = None
+    try:
+        import time as _time
+        end = _time.monotonic() + timeout
+        shown = _time.monotonic()
+        while True:
+            try:
+                p.wait(timeout=max(0.01, min(0.25, end - _time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if taker is not None and _time.monotonic() - shown >= 1.0:
+                    shown = _time.monotonic()
+                    _show_last_line(fo, fe, cmd)      # Its newest line, live in the chat
+                if stop_requested():
+                    raise Stopped(cmd, timeout) from None
+                if _time.monotonic() >= end:
+                    raise
+    except subprocess.TimeoutExpired as _te:
+        if taker is not None and not isinstance(_te, Stopped):
+            fo.flush()
+            fe.flush()
+            said = taker.adopt(p, Path(fo.name), Path(fe.name), job, cmd, timeout)
+            if said:
+                job = None                       # The process list owns it now
+                raise MovedToBackground(said) from None
+        if os.name == "nt":
+            _close_job(job)
+            job = None
+            p.kill()
+        else:
+            _stop_group(p)
+        p.wait()
+        if on_timeout is not None:
+            try:
+                on_timeout()
+            except Exception:                    # noqa: BLE001
+                pass
+        raise
+    finally:
+        if job is not None:
+            _close_job(job)                      # What it left running ends with it
+    left = False
+    if os.name != "nt":
+        try:                                     # Anything it started still there?
+            os.killpg(p.pid, 0)
+            left = True
+            _stop_group(p)
+        except OSError:
+            pass
+    out, n_out = _read_kept(fo, keep)
+    err, n_err = _read_kept(fe, keep)
     done = subprocess.CompletedProcess(cmd, p.returncode, out, err)
     done.out_bytes = n_out + n_err
     done.left_running = left

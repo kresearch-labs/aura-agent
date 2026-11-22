@@ -226,7 +226,7 @@ class Governor:
 
     # ------------------------------------------------- compaction
     def compact(self, messages: list[dict], focus: str = "",
-                state: str = "") -> CompactionResult:
+                state: str = "", carry_earlier: bool = True) -> CompactionResult:
         """Split messages: keep system + recent N verbatim; summarize middle.
         focus (from /compact [focus]) steers what the operator wants kept."""
         if not messages:
@@ -237,6 +237,10 @@ class Governor:
         cut = self._safe_cut(rest, max(0, len(rest) - self.keep_recent))
         to_summarize, keep = rest[:cut], rest[cut:]
         old_words, old_lines = _carried(old)
+        if not carry_earlier:
+            # the chat is kept in indexed parts: an earlier summary's lines are
+            # not copied on (a summary of a summary drifts); the index has them
+            old_lines = []
 
         verbatim: list[str] = []
         for m in to_summarize:
@@ -286,7 +290,8 @@ class Governor:
         return "\n".join(ranked)
 
     def compact_with_summary(self, messages: list[dict], summary_text: str,
-                             focus: str = "", state: str = "") -> CompactionResult:
+                             focus: str = "", state: str = "",
+                             carry_earlier: bool = True) -> CompactionResult:
         """LLM-driven compaction: the CALLER gets an LLM structured summary; this
         method validates it keeps the verbatim tokens and builds the
         CompactionResult. Falls back to heuristic lines when summary_text is
@@ -300,6 +305,8 @@ class Governor:
         cut = self._safe_cut(rest, max(0, len(rest) - self.keep_recent))
         to_summarize, keep = rest[:cut], rest[cut:]
         old_words, old_lines = _carried(old)
+        if not carry_earlier:
+            old_lines = []                  # The index has them (see compact)
         verbatim = list(dict.fromkeys(
             v for m in to_summarize
             for v in extract_verbatim(str(m.get("content", "")))))[:VERBATIM_CAP]
@@ -411,9 +418,13 @@ class Governor:
     @staticmethod
     def journal_injection(notes: str, last_n: int = 20) -> str:
         """Last-N lines of the agent journal, injected into each prompt."""
-        if not notes.strip():
+        # The file's own header (title, HTML comments) is for a person reading
+        # the file; sent to the model, its "write here" made the model create
+        # a journal file in the user's project. Only the entries go in.
+        lines = [ln for ln in notes.strip().splitlines()
+                 if ln.strip() and not ln.lstrip().startswith(("<!--", "# Agent Journal"))]
+        if not any(not ln.lstrip().startswith("## ") for ln in lines):
             return ""
-        lines = notes.strip().splitlines()
         return "\n".join(lines[-last_n:])
 
 

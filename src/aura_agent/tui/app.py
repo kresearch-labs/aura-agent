@@ -48,6 +48,7 @@ SHORTCUTS = [
     ("Enter", "send · while Aura works: it reads your message at its next step"),
     ("Ctrl+Enter", "while Aura works: stop this step and read your message now"),
     ("Shift+Enter · Alt+Enter · Ctrl+J", "new line (or end a line with \\)"),
+    ("Esc · Ctrl+C", "stop the task — what you typed meanwhile comes back to the box, not sent"),
     ("Esc", "stop the task · close a menu"),
     ("Esc Esc", "empty box: edit an earlier message · text: clear it"),
     ("Shift+Tab", "how often Aura asks first (and plan mode)"),
@@ -429,6 +430,7 @@ class ChatApp:
         self.spin_i += 1
         self._cron_check()
         self._waiting_check()
+        self._background_wake()
         self.render()
 
     def set_screen(self, mode: str, save: bool = False, seed: bool = True) -> str:
@@ -483,6 +485,40 @@ class ChatApp:
                 "select (copied on release); /diff opens the changes beside the chat; "
                 "/tui inline goes back" if want else
                 "inline — the conversation is in your terminal's scrollback again")
+
+    def _background_wake(self) -> None:
+        """Aura is idle and a background process it started has news — it ended,
+        asks a question, or printed a line Aura is watching for: Aura takes a
+        short turn to deal with it, instead of the news waiting for the user's
+        next message. At most once every 20 s, never within 30 s of the user
+        stopping a task, and only with the option background.wake on.
+        """
+        if self.running:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_wake_t", 0.0) < 20 or \
+                now - getattr(self, "_stopped_t", -1e9) < 30:
+            return
+        self._wake_t = now
+        if getattr(self, "_wakes", 0) >= 3:
+            return                         # Three in a row with no word from the user: wait
+        reg = getattr(self.m, "_procs", None)
+        if reg is None:
+            return
+        try:
+            from ..options import get as _opt
+            if not _opt("background.wake"):
+                return
+            if not reg.news():
+                return
+        except Exception:      # noqa: BLE001 - a check never stops the chat
+            return
+        self._wakes = getattr(self, "_wakes", 0) + 1
+        self.start_turn(
+            "[A background process you started has news — it is in the notes below. "
+            "Deal with it: tell the user what happened in a line or two, and carry on "
+            "with the work it was for if that is clear; otherwise ask.]",
+            shown="(background update)")
 
     def _cron_check(self) -> None:
         """A scheduled job finished while the chat is open (the scheduler runs it
@@ -721,6 +757,7 @@ class ChatApp:
         if kind == "llm_start":
             self.turn_steps += 1
         if kind == "tool_start":
+            self._unacted = []                 # The model acted after reading them
             self._end_thinking()
             self._flush_answer()
             verb, target = cells.tool_title(d.get("tool", ""), d.get("args") or {})
@@ -806,6 +843,8 @@ class ChatApp:
                 if self.queued:
                     self.queued.pop(0)
                 txt = str(it.get("text", ""))
+                if it.get("kind") != "later":
+                    self._unacted = getattr(self, "_unacted", []) + [txt]
                 if it.get("kind") == "later":
                     self.pending.append(txt)
                     what = " a separate request — runs after this task: "
@@ -927,6 +966,7 @@ class ChatApp:
         stripped = text.strip()
         if not stripped:
             return
+        self._wakes = 0                    # The user spoke: background wakes may run again
         history.append(self.eng, text)
         if stripped.startswith("/") and not stripped.startswith("//"):
             self.run_command(stripped)
@@ -1286,8 +1326,6 @@ class ChatApp:
         self.say(cells.footer_cell(parts, s, ok=not problem and not stopped and not missing))
         if not stopped and not problem:
             self._auto_review()
-        # Plan mode: once the plan is given, back to act on its own — not when
-        # the answer is a question back to you, or the turn stopped or failed
         if (getattr(self.m, "mode", "act") == "plan" and not problem and not stopped
                 and self.last_answer.strip() and not self.last_answer.rstrip().endswith("?")):
             self.m.mode = "act"
@@ -1313,7 +1351,21 @@ class ChatApp:
         left = [m for m in self.state.get("steer_queue", [])]
         self.state["steer_queue"] = []
         self.queued = []
-        self.pending = left + self.pending
+        unacted, self._unacted = getattr(self, "_unacted", []), []
+        if not stopped:
+            unacted = []
+        if stopped and (unacted or left or self.pending):
+            # stopped means stopped: what was typed during the run is not sent
+            # — it goes back into the box (before anything typed since), to
+            # edit or send; so does a message the task took in but the model
+            # never acted on before the stop
+            back = unacted + left + self.pending
+            self.pending = []
+            typed = self.editor.text
+            self.editor.set("\n\n".join(back + ([typed] if typed.strip() else [])))
+            self.flash("stopped — what you typed is back in the box, not sent")
+        else:
+            self.pending = left + self.pending
         try:
             from .. import session_settings
             session_settings.remember(self.loop, self.ctx.session, self.state)
@@ -1395,6 +1447,12 @@ class ChatApp:
         if not self.running:
             return
         self.state["killed"] = True
+        self._stopped_t = time.monotonic()        # No background wake right after a stop
+        try:
+            from ..sandbox_os import STOP_WHY
+            STOP_WHY["why"] = "task"
+        except Exception:      # noqa: BLE001
+            pass
         self.cancel.set()
         try:
             from ..sandbox_os import STOP
@@ -2203,8 +2261,9 @@ class ChatApp:
             self.submit(text)
             return
         if kid == "ctrl+enter" and self.running and ed.text.strip():
-            # while Aura works: stop this step and read the message now (Enter
-            # waits for the next step)
+            # while Aura works: stop this step (a running tool too) and read the
+            # message now (Enter waits for the next step). Shift+Enter stays a
+            # new line, always
             self._prepare_send(ed)
             text = ed.submit()
             self.popup = []
@@ -2212,6 +2271,12 @@ class ChatApp:
             if text.strip() in self.state.get("steer_queue", []):
                 self.loop.urgent = True
                 self.cancel.set()              # Cuts the reply in progress
+                try:                           # …and ends a tool that is running
+                    from ..sandbox_os import STOP, STOP_WHY
+                    STOP_WHY["why"] = "message"
+                    STOP.set()
+                except Exception:      # noqa: BLE001
+                    pass
                 self.flash("sent — Aura stops this step and reads it now")
             return
         if kid in ("shift+enter", "alt+enter", "ctrl+j", "ctrl+enter"):
@@ -2476,6 +2541,16 @@ class ChatApp:
             if self.overlay is not None and self.overlay.get("kind") in ("approval", "clarify"):
                 act = "paused — waiting for your answer"      # No expiry: it waits for you
             out.append(self._activity_line(frame, act, elapsed))
+            if self.activity not in ("thinking", "writing", "stopping", ""):
+                # what the running tool is doing right now (folders walked, a
+                # command's newest line) — a long step never looks frozen
+                try:
+                    from ..stopping import current_progress
+                    prog = current_progress()
+                except Exception:      # noqa: BLE001
+                    prog = ""
+                if prog:
+                    out.append("  " + s("faint", s.g("bar")) + " " + s("dim", cut(prog, max(20, w - 6))))
             if self.reasoning and self.activity == "thinking":
                 # live thinking: its last lines, so it never looks frozen
                 live = _think_lines(self.think_all, max(20, w - 6),
@@ -2491,7 +2566,6 @@ class ChatApp:
                        + s("dim", cut(q.replace("\n", " "), w - 22)))
         if len(self.pending) > 3:
             out.append("  " + s("faint", f"  … +{len(self.pending) - 3} more waiting"))
-        # 4. the plan
         if self.show_plan:
             out.extend(self._plan_lines())
         # 5. menus above the box
@@ -2785,7 +2859,14 @@ class ChatApp:
                 out.append("    " + s("faint", "↑↓ Enter · 1-9 · type to answer in your words · Esc skip"))
             return out
         if kind == "ask":
-            out = ["", "  " + s("accent", "? ", bold=True) + s("strong", cut(ov["prompt"], w - 6), bold=True),
+            p = str(ov["prompt"])
+            team = p.startswith("[team] ")       # TEAM questions marked
+            if team:
+                p = p[len("[team] "):]
+            mark = (s("accent", "▌TEAM ", bold=True) if team
+                    else s("accent", "? ", bold=True))
+            out = ["", "  " + mark + s("strong", cut(p, w - 10), bold=True)
+                   + (s("faint", "  — the team board") if team else ""),
                    "    " + s("faint", "type your answer in the box below · Enter answers · Esc cancels")]
             return out
         if kind == "choose":

@@ -75,11 +75,7 @@ def _records(paths) -> tuple[list, str]:
 
 
 def _build_corpus(spec: Path, work: Path, name: str, records=None):
-    """The corpus comes from the plan (corpus_builder: the size falls out of the
-    declared space) plus the 1/2 rows from harvest or walk files; every real
-    record carries its source, near-copies are dropped. Returns (corpus path,
-    near-copies dropped, error).
-    """
+    """Returns (corpus path, near-copies dropped, error)."""
     import json
     from ..pblock_engine import corpus_builder as CB
     try:
@@ -137,9 +133,7 @@ def _gated_template(txt: str) -> str:
 
 
 def _corpus_mix(corpus: Path) -> dict:
-    """How much of the corpus is real (1/2: harvest, walk, real records) vs
-    generated from the plan (3).
-    """
+    """How much of the corpus is real (1/2."""
     import json
     real = gen = 0
     shapes = set()
@@ -300,12 +294,13 @@ def register(mediator: Mediator, dispatch: dict) -> None:
         tpl_out = work / f"{name}.yml"
         tpl_out.write_text(txt, encoding="utf-8")
         try:
-            run = subprocess.run(
+            from ..stopping import run as _run_stoppable
+            # up to an hour: a user's stop ends it (the trainer is killed)
+            run = _run_stoppable(
                 [sys.executable, "-m", "aura_agent.pblock_engine.train_pblock",
                  "--template", str(tpl_out), "--corpus", str(corpus),
                  "--out-dir", str(work)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=3600,
+                timeout=3600, what="pblock_train",
                 env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         except subprocess.TimeoutExpired:
             return "error: training ran over an hour and was stopped; nothing was added."

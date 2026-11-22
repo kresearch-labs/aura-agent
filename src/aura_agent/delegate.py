@@ -44,7 +44,8 @@ def run_delegate(parent_root: Path, profile, scope: Scope,
                  max_steps: int | None = None,
                  role: dict | None = None,
                  steer_queue: list[str] | None = None,
-                 workspace: Path | None = None) -> dict:
+                 workspace: Path | None = None,
+                 stop_with_user: bool = True) -> dict:
     """Run one child agent to completion. Returns {summary, session, steps}.
     role (G'2): {'role': name, 'system': extra system prompt, 'tools': set
     of tool names to KEEP (default all read-only), 'max_steps': override,
@@ -152,7 +153,14 @@ def run_delegate(parent_root: Path, profile, scope: Scope,
     child.stream_sink = lambda kind, text: None
     child.parent_run = role.get("parent_run", "")     # Receipts linked
     session = new_session(root / "sessions", name)
-    rec = child.run(session, task, steer_queue=steer_queue, work_dir=ws)
+    # the user's stop reaches a helper working for this task: its reply is
+    # cut off and its loop ends. A background helper (stop_with_user=False)
+    # has its own stop and keeps going.
+    from .sandbox_os import STOP
+    if stop_with_user and getattr(llm, "cancel_event", None) is None:
+        llm.cancel_event = STOP
+    rec = child.run(session, task, kill_check=STOP.is_set if stop_with_user else None,
+                    steer_queue=steer_queue, work_dir=ws)
     summary = rec.content or rec.error or "(no output)"
     if getattr(m, "tainted", False):
         summary += ("\n" + HELPER_TAINT)

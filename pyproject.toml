@@ -72,6 +72,13 @@ path = "src/aura_agent/__init__.py"
 [tool.hatch.build.targets.sdist]
 include = ["src/aura_agent", "scripts/install.sh", "scripts/install.ps1",
            "README.md", "LICENSE", "NOTICE", "pyproject.toml"]
+# the built team page is git-ignored (made by the web build), so it is named
+# here too — the wheel is built FROM this archive and would lose it otherwise
+artifacts = ["src/aura_agent/webui/**"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aura_agent"]
+# Desktop-plan E.12: the built web page rides the wheel — the hub's
+# /team lane refuses politely (404 "the team page isn't built here") when
+# it's not.
+artifacts = ["src/aura_agent/webui/**"]

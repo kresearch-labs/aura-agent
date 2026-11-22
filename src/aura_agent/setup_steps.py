@@ -668,42 +668,186 @@ def _team_default() -> str:
     return "" if n == "default" else n
 
 
+def _seed_owner(username: str, password: str) -> dict:
+    """Never twice."""
+    try:
+        from .teamserver import store, teamserver_db, tls as TL
+        from .teamserver import passwords as PW
+        from .teamserver.teamclient import new_device_key
+        import nacl.encoding
+        import socket
+        conn = store.connect(teamserver_db.db_path())
+        store.migrate(conn)
+        if conn.execute("SELECT 1 FROM team WHERE id = 1").fetchone():
+            return {"ok": False,
+                    "detail": "this machine is already a team hub"}
+        cert = teamserver_db.team_dir() / "team-cert.pem"
+        fp = TL.fingerprint(open(cert, "rb").read()) if cert.exists() else ""
+        team_name = "team"
+        key = new_device_key(team_name)
+        pub = key.verify_key.encode(nacl.encoding.RawEncoder)
+        host = socket.gethostname()[:40] + "-aura"
+        r = store.bootstrap(conn, team_name, username, pub, host, fp)
+        conn.execute(
+            "UPDATE people SET pw_hash = ?, team_role = 'owner',"
+            " must_change = 0, failed = 0 WHERE id = ?",
+            (PW.hash_password(password), r["owner"]))
+        conn.commit()
+        from . import teams
+        lan = teams.lan_address()
+        from . import teams_server as _TS
+        port = _TS.saved_port() or 7443
+        cfg = teams.load_config()
+        cfg["aura_team"] = {"url": f"https://{lan}:{port}",
+                            "alt": [], "fingerprint": fp,
+                            "device_id": r.get("device", ""),
+                            "person": username, "team": team_name,
+                            "team_id": team_name, "role": "owner"}
+        teams.save_config(cfg)
+        return {"ok": True,
+                "addresses": [f"https://{lan}:{port}"],
+                "fingerprint": fp}
+    except Exception as e:                             # noqa: BLE001
+        return {"ok": False, "detail": str(e)[:200]}
+
+
+def _connect_with_password(addr: str, name: str, pw: str) -> dict:
+    """The password enters at the hidden box, runs ONE registration at POST
+    api/v1/aura/device, and is dropped — what survives is the device key
+    (teams.server_connect owns the network: pinned TLS, info probe first, the
+    doc's must-change sentence). No password ever lands on disk.
+    """
+    from . import teams
+    return teams.server_connect(addr, name, pw)
+
+def _crypto_ok() -> bool:
+    from .teamserver.tls import cryptography_ok
+    return cryptography_ok()
+
+
 def _team_asks(ctx) -> list:
-    from .teams import load_config
-    return [Ask("teams.username", "Your username for team work (blank = later)", [],
-                default=load_config().get("username", "") or _team_default(),
-                why="Aura Teams: your name on the team board's work and your git "
-                    "branch name — letters, digits and dashes")]
+    return [Ask("teams.setup", "Team work — what does this machine do?",
+                [("setup", "Set up the team hub on this machine"),
+                 ("connect", "Connect to a team hub"),
+                 ("later", "Not now")],
+                default="later",
+                why="until one finishes, no team tools reach the model, no "
+                    "TEAM panel, nothing moves anywhere"),
+            Ask("teams.owner_name", "Your username — the owner of this team hub",
+                [], default=_team_default(), when="teams.setup=setup",
+                why="lowercase letters, digits and dashes (your branch name "
+                    "and the board's owner)"),
+            Ask("teams.owner_password", "Your password for the hub (hidden, "
+                "8–64 characters)", [], secret=True, when="teams.setup=setup"),
+            Ask("teams.owner_password2", "The same password again (hidden)",
+                [], secret=True, when="teams.setup=setup"),
+            Ask("teams.autostart", "Start the team hub when this computer starts? "
+                "(so your team can reach it after a restart)",
+                [("on", "Yes"), ("off", "No — I'll start it myself")],
+                default="on", when="teams.setup=setup"),
+            *([Ask("teams.crypto",
+                   "Teams needs one extra part (cryptography, about 4 MB) to make its "
+                   "secure certificate. Install it now?",
+                   [("install", "Install it"), ("no", "Not now")],
+                   default="install", when="teams.setup=setup")]
+              if not _crypto_ok() else []),
+            Ask("teams.hub_address", "The hub's network address, in your "
+                "words (https://…:7443)", [], when="teams.setup=connect",
+                why="the address comes from you (your admin gives it), never from a "
+                    "message Aura saw"),
+            Ask("teams.hub_name", "Your name on the team (the admin's spelling)",
+                [], default=_team_default(), when="teams.setup=connect"),
+            Ask("teams.hub_password", "Your password for the hub (hidden, "
+                "never stored)", [], secret=True, when="teams.setup=connect")]
 
 
 def _team_save(ctx, ans) -> list:
     from . import teams
-    name = str(ans.get("teams.username") or "").strip()
-    if not name:
-        return []
-    try:
-        name = teams.check_username(name)
-    except ValueError as e:
-        ctx["team.refused"] = f"'{name}' not saved: {e}"
-        return [f"team username not saved: {e}"]
-    cfg = teams.load_config()
-    if cfg.get("username") == name:
-        return []
-    cfg["username"] = name
-    teams.save_config(cfg)
-    return [f"team username: {name} (your branch name)"]
+    choice = str(ans.get("teams.setup") or "later").strip().lower()
+    if choice == "setup":
+        uname = str(ans.get("teams.owner_name") or "").strip()
+        pw  = str(ans.get("teams.owner_password") or "")
+        pw2 = str(ans.get("teams.owner_password2") or "")
+        if not uname:
+            return ["no username given — Teams stays off for now"]
+        if pw != pw2:
+            return ["the two passwords weren't the same — nothing saved yet"]
+        from .teamserver import passwords as _pw
+        bad = _pw.validate(pw)
+        if bad:
+            return [bad]
+        if not _crypto_ok():
+            if str(ans.get("teams.crypto") or "no") != "install":
+                return ["Teams isn't set up — say: set up Teams when you're ready."]
+            from .teamserver import tls as _tls
+            said = _tls.install()
+            if not _crypto_ok():
+                ctx["team.failed"] = said
+                return [said]
+        # Own hub: the server starts detached and must answer health before the
+        # flag flips (: only on finish)
+        from . import teams_server as TS
+        r = TS.start()
+        if not r.get("ok"):
+            ctx["team.failed"] = r.get("detail", "the hub didn't start")
+            return [f"the team hub didn't start: {r.get('detail')}"]
+        seeded = _seed_owner(uname, pw)
+        if not seeded.get("ok"):
+            ctx["team.failed"] = seeded.get("detail", "the owner seed failed")
+            return [f"hub is up but the owner account didn't save: "
+                    f"{seeded.get('detail')}"]
+        _set("teams.enabled", True)
+        addrs = [str(x) for x in seeded.get("addresses", [])] \
+            or [f"https://127.0.0.1:{r.get('port')}"]
+        out = [f"teams.enabled: on — this machine's hub answers on port "
+               f"{r.get('port', '?')}",
+               f"Open the team page: https://127.0.0.1:{r.get('port')}/team/ and "
+               f"sign in as '{uname}'.",
+               "Your team reaches it at " + ", ".join(addrs) + ".",
+               "Next: add each teammate in Admin › Users — the page gives you a "
+               "message to send them, with the address and the next steps."]
+        auto = str(ans.get("teams.autostart") or "on") == "on"
+        out += TS.login_start(auto)
+        return out
+    if choice == "connect":
+        # Sign in on the hub with name+password.
+        # FIX-PLAN pins the rest down: the address must be the user's own
+        # words; the password lives only in this call — Aura keeps NO password.
+        addr = str(ans.get("teams.hub_address") or "").strip()
+        if not addr:
+            return ["no hub address given — Teams stays off for now "
+                    "(the hub's address asks the admin)"]
+        name = str(ans.get("teams.hub_name") or "").strip()
+        pw = str(ans.get("teams.hub_password") or "")
+        if not name or not pw:
+            return ["the name and the password both need typing — Teams "
+                    "stays off for now"]
+        r = _connect_with_password(addr, name, pw)
+        if not r.get("ok"):
+            ctx["team.failed"] = r.get("detail", "the sign-in didn't finish")
+            return [f"couldn't connect: {r.get('detail')}"]
+        _set("teams.enabled", True)
+        return [r["detail"], "teams.enabled: on",
+                f"Your board: {addr.rstrip('/')}/team/",
+                "Next: name a board task in your request to link the work to it "
+                "— for example: #3 fix the login. Ask Aura \"what are my team "
+                "tasks?\" to see them."]
+    return ["Teams stays off — say 'set up Teams' to Aura when you want it"]
 
 
 def _team_check(ctx) -> Proof:
-    from .teams import load_config
-    cfg = load_config()
-    name = cfg.get("username")
-    if ctx.get("team.refused"):
-        return Proof(False, f"team username: {name or 'none'}", missing=ctx["team.refused"],
-                     fix="aura setup team")
-    return Proof(True, (f"team username: {name}" if name else "no team username "
-                        "(that's fine until you join a team)")
-                 + (f" · hub: {cfg['hub_url']}" if cfg.get("hub_url") else ""))
+    from . import teams
+    if ctx.get("team.failed"):
+        return Proof(False, f"Teams off — {ctx['team.failed']}",
+                     missing=ctx["team.failed"], fix="aura setup teams")
+    if not teams.enabled():
+        return Proof(True, "Teams off (no hub here, not connected — say "
+                           "'aura setup teams' when you want it)")
+    at = teams.load_config().get("aura_team") or {}
+    if at.get("url"):
+        return Proof(True, f"Teams on — connected to '{at.get('team', '?')}' "
+                           f"at {at['url']} as {at.get('person', '?')}")
+    return Proof(True, "Teams on — this machine runs the hub")
 
 
 # ------------------------------------------------------------ 11 look --
@@ -1272,35 +1416,38 @@ def runner_kind() -> str:
     return "none"
 
 
-def runner_file(kind: str | None = None) -> Path | None:
+def runner_file(kind: str | None = None, name: str = "cron") -> Path | None:
     from .paths import profile_name
     kind = kind or runner_kind()
     tag = profile_name()
     if kind == "systemd":
-        return Path.home() / ".config" / "systemd" / "user" / f"aura-cron-{tag}.service"
+        return Path.home() / ".config" / "systemd" / "user" / f"aura-{name}-{tag}.service"
     if kind == "macos":
-        return Path.home() / "Library" / "LaunchAgents" / f"ai.aura.cron.{tag}.plist"
+        return Path.home() / "Library" / "LaunchAgents" / f"ai.aura.{name}.{tag}.plist"
     if kind == "windows":
         return Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / \
-            "Start Menu" / "Programs" / "Startup" / f"aura-cron-{tag}.cmd"
+            "Start Menu" / "Programs" / "Startup" / f"aura-{name}-{tag}.cmd"
     return None
 
 
-def runner_text(kind: str) -> str:
+def runner_text(kind: str, argv: list[str] | None = None, what: str = "",
+                name: str = "cron") -> str:
     env = _runner_env()
     py = sys.executable
+    RUN = argv or RUN_ARGV
+    what = what or "Aura scheduled jobs (aura cron watch)"
     if kind == "systemd":
         envs = " ".join(f'"{k}={v}"' for k, v in env.items())
-        return ("[Unit]\nDescription=Aura scheduled jobs (aura cron watch)\n\n"
-                f"[Service]\nExecStart={py} {' '.join(RUN_ARGV)}\nEnvironment={envs}\n"
+        return (f"[Unit]\nDescription={what}\n\n"
+                f"[Service]\nExecStart={py} {' '.join(RUN)}\nEnvironment={envs}\n"
                 "Restart=on-failure\nRestartSec=30\n\n[Install]\nWantedBy=default.target\n")
     if kind == "macos":
         from xml.sax.saxutils import escape as x
-        args = "".join(f"<string>{x(a)}</string>" for a in [py, *RUN_ARGV])
+        args = "".join(f"<string>{x(a)}</string>" for a in [py, *RUN])
         envs = "".join(f"<key>{x(k)}</key><string>{x(v)}</string>" for k, v in env.items())
         return ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC '
                 '"-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-                f'<plist version="1.0"><dict><key>Label</key><string>{x(runner_file(kind).stem)}'
+                f'<plist version="1.0"><dict><key>Label</key><string>{x(runner_file(kind, name).stem)}'
                 f'</string><key>ProgramArguments</key><array>{args}</array>'
                 f'<key>EnvironmentVariables</key><dict>{envs}</dict>'
                 '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>\n')
@@ -1308,7 +1455,7 @@ def runner_text(kind: str) -> str:
         pyw = Path(py).with_name("pythonw.exe")
         exe = str(pyw if pyw.exists() else py)
         sets = "".join(f'set "{k}={v}"\r\n' for k, v in env.items())
-        return f'@echo off\r\n{sets}start "" /min "{exe}" {" ".join(RUN_ARGV)}\r\n'
+        return f'@echo off\r\n{sets}start "" /min "{exe}" {" ".join(RUN)}\r\n'
     return ""
 
 
@@ -2164,7 +2311,7 @@ if not _teams_present():                    # Shipped without Aura Teams
     STEPS = [s for s in STEPS if s.id != "team"]
 BY_ID = {s.id: s for s in STEPS}
 # the old step names still open the step they were folded into
-ALIASES = {"code": "tools", "look": "you"}
+ALIASES = {"code": "tools", "look": "you", "teams": "team"}
 # The step stays reachable by name: aura setup you
 BY_ID["you"].in_setup = False
 

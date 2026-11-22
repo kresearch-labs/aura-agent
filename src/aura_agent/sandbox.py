@@ -132,10 +132,27 @@ def docker_argv(cmd: str, engagement_root: Path, cwd: str | None,
 
 
 def scrubbed_env() -> dict:
-    """BUILD 6 layer-one: credential env vars never enter the sandbox."""
+    """Credential env vars never enter the sandbox."""
     env = dict(os.environ)
     for k in SENSITIVE_ENV_VARS:
         env.pop(k, None)
+    return agent_env(env)
+
+
+def agent_env(env: dict) -> dict:
+    """Every command Aura runs reads plain, finished output and never waits on a
+    screen no one sees: no pager (git log, man — in a terminal they wait for a
+    key), no colour codes, a plain terminal type, git never asks for a password
+    or opens an editor (it fails with a message instead of hanging; Aura's own
+    git helper still answers), and AURA=1 so a script can tell Aura runs it.
+    """
+    for k in ("PAGER", "GIT_PAGER", "MANPAGER", "SYSTEMD_PAGER"):
+        env[k] = "cat"
+    env["TERM"] = "dumb"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env.setdefault("GIT_EDITOR", "true")
+    env.setdefault("NO_COLOR", "1")
+    env["AURA"] = "1"
     return env
 
 

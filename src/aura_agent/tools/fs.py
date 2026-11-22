@@ -135,6 +135,56 @@ def _snapshot(root: Path, path: Path, shadow_dir: Path) -> str | None:
     return digest
 
 
+def _entries(top: Path, skip_dirs, inside: set, skipped: set, root: Path,
+             depth: int | None = None):
+    """Everything under top, depth first, names in order within each folder
+    (case-blind on Windows, like its paths); folders in skip_dirs (unless the
+    listing starts inside one) are noted in `skipped` and never opened. A
+    user's stop ends it (UserStopped). Folder links are listed, not followed."""
+    from ..stopping import check
+    key = (lambda e: e.name.lower()) if os.name == "nt" else (lambda e: e.name)
+
+    from ..stopping import progress
+
+    def rec(d: Path, level: int = 1):
+        check("list_files")
+        progress(f"listing {d}")
+        try:
+            with os.scandir(d) as it:
+                items = sorted(it, key=key)
+        except OSError:
+            return
+        for e in items:
+            p = Path(e.path)
+            try:
+                is_dir = e.is_dir(follow_symlinks=False)
+            except OSError:
+                continue
+            if is_dir and e.name in skip_dirs and e.name not in inside:
+                skipped.add(p.relative_to(root).as_posix())
+                continue
+            yield p, is_dir
+            if is_dir and (depth is None or level < depth):
+                yield from rec(p, level + 1)
+
+    yield from rec(top)
+
+
+def _size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def _ago_short(t: float) -> str:
+    s = max(0, int(time.time() - t))
+    return ("just now" if s < 60 else f"{s // 60} min ago" if s < 3600
+            else f"{s // 3600} h ago" if s < 86400
+            else f"{s // 86400} days ago")
+
+
 # ---------------------------------------------------------------- the tools --
 def list_files(root: Path, args: dict) -> list[str]:
     sub = _resolve_in_root(root, args.get("path", "."), read=True)
@@ -156,19 +206,56 @@ def list_files(root: Path, args: dict) -> list[str]:
     # fill all 500 entries): skipped like search_files skips them, unless
     # the listing starts inside one
     from .search import SKIP_DIRS
+    from ..stopping import UserStopped
     inside = set(sub.relative_to(root.resolve()).parts) if sub != root.resolve() else set()
     skipped: set[str] = set()
-    for p in sorted(sub.rglob("*")):
-        hit = [x for x in p.relative_to(sub).parts if x in SKIP_DIRS and x not in inside]
-        if hit:
-            if p.is_dir() and p.name in SKIP_DIRS:
-                skipped.add(p.relative_to(root).as_posix())
-            continue
+    try:
+        depth = int(args["depth"]) if args.get("depth") not in (None, "", 0) else None
+    except (TypeError, ValueError):
+        raise Violation("list_files: depth is a whole number (1 = only this folder)")
+    sort = str(args.get("sort") or "name").lower()
+    if sort not in ("name", "newest", "largest"):
+        raise Violation("list_files: sort is name, newest or largest")
+    details = bool(args.get("details")) or sort != "name"
+    stopped = False
+    rows: list[tuple[Path, bool]] = []
+    # sorted by date or size needs the whole (depth-limited) list first;
+    # by name it streams and ends at 500
+    cap = 500 if sort == "name" else 20_000
+    try:
+        # Folder by folder, names in order, skipped folders never opened, and
+        # it ends at the cap.
+        for p, is_dir in _entries(sub, SKIP_DIRS, inside, skipped, root, depth):
+            rows.append((p, is_dir))
+            if len(rows) >= cap:
+                break
+    except UserStopped:
+        stopped = True
+    full = len(rows) >= cap
+
+    def _st(p):
+        try:
+            return p.stat()
+        except OSError:
+            return None
+    stats = {p: _st(p) for p, _d in rows} if details else {}
+    if sort == "newest":
+        rows.sort(key=lambda r: -(stats[r[0]].st_mtime if stats.get(r[0]) else 0))
+    elif sort == "largest":
+        rows.sort(key=lambda r: -(stats[r[0]].st_size if stats.get(r[0]) and not r[1] else -1))
+    for p, is_dir in rows[:500]:
         rel = p.relative_to(root)
-        out.append(f"{rel}/" if p.is_dir() else str(rel))
-        if len(out) >= 500:
-            out.append("... (truncated at 500 entries)")
-            break
+        line = f"{rel}/" if is_dir else str(rel)
+        st = stats.get(p)
+        if details and st is not None:
+            line += (f"  ({_ago_short(st.st_mtime)}" + ("" if is_dir else f", {_size(st.st_size)}")
+                     + ")")
+        out.append(line)
+    if len(rows) > 500 or (full and sort == "name"):
+        out.append("... (truncated at 500 entries — use depth= or a smaller path)")
+    if stopped:
+        out.append(f"(stopped by the user after {len(rows)} entries)")
+        return out
     if skipped:
         out.append(f"(not listed: {', '.join(sorted(skipped)[:8])}"
                    + (" …" if len(skipped) > 8 else "") + " — list one by its path to see inside)")
@@ -212,8 +299,45 @@ def read_file(root: Path, args: dict, store: Path | None = None,
         raise IsADirectoryError(f"{args['path']} is a folder — use list_files")
     if not p.is_file():
         raise _missing(root, args["path"])
-    data = p.read_bytes() if full else p.read_bytes()[:MAX_READ_BYTES]
-    text = data.decode("utf-8", errors="replace")
+    # PDFs, notebooks, Office files, images: their own readers (readers.py)
+    from . import readers
+    other = readers.special(p, args)
+    if other is not None:
+        # remembered as read, so notebook_edit / a later write are allowed
+        if seen is not None and p.stat().st_size <= 4_000_000:
+            try:
+                with open(p, encoding="utf-8", errors="replace", newline="") as _f:
+                    seen[str(p.resolve())] = _f.read().replace("\r\n", "\n")
+            except OSError:
+                pass
+        try:
+            from ..secrets_guard import scrub_secrets
+            return scrub_secrets(other)
+        except Exception as _swallowed:
+            log_swallowed("fs.secrets_scrub", _swallowed)
+            from ..secrets_guard import withheld
+            return withheld(f"read_file {p.name}", _swallowed)
+    size = p.stat().st_size
+    try:
+        first = max(1, int(args.get("offset") or 1))
+        count = max(1, int(args.get("limit") or 2000))
+    except (TypeError, ValueError):
+        first, count = 1, 2000
+    window = None
+    if not full and size > MAX_READ_BYTES and first > 1:
+        # A big file, read further in: just those lines
+        window = _line_window(p, first, count)
+    if window is not None:
+        data, first_line = window
+    else:
+        data = p.read_bytes() if full else p.read_bytes()[:MAX_READ_BYTES]
+        first_line = 1
+    if readers.is_binary(data):
+        return readers.binary_note(p, data)
+    text, enc_note = readers.decode(data)
+    cut = (not full and window is None and size > MAX_READ_BYTES)
+    if cut and "\n" in text:
+        text = text[: text.rfind("\n")]               # No half line at the cut
     # Scrub pass: secrets that ride inside legitimate reads are redacted before
     # entering the session tape
     try:
@@ -231,15 +355,51 @@ def read_file(root: Path, args: dict, store: Path | None = None,
                 seen[str(p.resolve())] = _f.read().replace("\r\n", "\n")
         except OSError:
             pass
-    try:
-        first = max(1, int(args.get("offset") or 1))
-        count = max(1, int(args.get("limit") or 2000))
-    except (TypeError, ValueError):
-        first, count = 1, 2000
-    sel = text.splitlines()[first - 1: first - 1 + count]
+    all_lines = text.splitlines()
+    skip = first - first_line
+    sel = all_lines[skip: skip + count]
     if line_tags_on():
-        return "\n".join(f"{i + first}:{line_tag(ln)}|{ln}" for i, ln in enumerate(sel))
-    return "\n".join(f"{i + first}|{ln}" for i, ln in enumerate(sel))
+        body = "\n".join(f"{i + first}:{line_tag(ln)}|{ln}" for i, ln in enumerate(sel))
+    else:
+        body = "\n".join(f"{i + first}|{ln}" for i, ln in enumerate(sel))
+    # Say what was left out, and how to get it
+    notes = []
+    last = first + len(sel) - 1
+    if window is None and skip + count < len(all_lines):
+        notes.append(f"lines {first}-{last} of {len(all_lines)}{'+' if cut else ''} shown — "
+                     f"more with offset={last + 1}")
+    elif window is not None and len(sel) == count:
+        notes.append(f"lines {first}-{last} shown — more with offset={last + 1}")
+    if cut and not notes:
+        notes.append(f"lines 1-{last} shown — the file goes on (it is "
+                     f"{readers.size_words(size)}); more with offset={last + 1}")
+    elif cut:
+        notes[-1] += f" (the file is {readers.size_words(size)})"
+    if enc_note:
+        notes.append(enc_note.strip("()"))
+    if not sel and first > 1:
+        return f"(the file has fewer than {first} lines — offset is past its end)"
+    return body + "".join(f"\n[{n}]" for n in notes)
+
+
+def _line_window(p: Path, first: int, count: int) -> tuple[bytes, int] | None:
+    """Lines first..first+count-1 of a big file without reading all of it
+    into memory (bytes, the line number they start at). A user's stop ends
+    the scan."""
+    from ..stopping import check
+    out: list[bytes] = []
+    got = 0
+    with open(p, "rb") as f:
+        for n, line in enumerate(f, 1):
+            if n % 50_000 == 0:
+                check("read_file")
+            if n < first:
+                continue
+            out.append(line)
+            got += len(line)
+            if len(out) >= count or got >= MAX_READ_BYTES:
+                break
+    return (b"".join(out), first) if out else (b"", first)
 
 
 def _readback_verify(p: Path, expect_bytes: int | None = None,
@@ -274,13 +434,39 @@ def _readback_verify(p: Path, expect_bytes: int | None = None,
         return f"VERIFY-FAIL: verification error {type(e).__name__}: {e}"
 
 
-def syntax_note(p: Path) -> str:
+def _parses(suffix: str, text: str) -> bool:
+    """Does this text parse as the file's kind (Python / JSON / TOML)?"""
+    try:
+        if suffix in (".py", ".pyi"):
+            compile(text, "x", "exec", dont_inherit=True)
+        elif suffix == ".json":
+            json.loads(text)
+        elif suffix == ".toml":
+            import tomllib
+            tomllib.loads(text)
+        return True
+    except Exception:                               # noqa: BLE001
+        return False
+
+
+def syntax_note(p: Path, before: str | None = None) -> str:
     """The write stands (it may be one step of several); the note tells the model
-    to fix it now instead of finding out at test time.
+    to fix it now instead of finding out at test time. `before` = the text it
+    replaced: an error that was already there is said to be older, so the
+    model knows whether its own change broke the file.
     """
     suffix = p.suffix.lower()
     if suffix not in (".py", ".pyi", ".json", ".toml"):
         return ""
+    note = _syntax_note(p, suffix)
+    if note and before is not None and before.strip() and not _parses(suffix, before):
+        note = note.replace(" — the file was written but does not parse; fix it now",
+                            " — it did not parse BEFORE this change either (an older "
+                            "problem, not this edit's); fix it if it is in your way")
+    return note
+
+
+def _syntax_note(p: Path, suffix: str) -> str:
     try:
         from ..features import enabled
         if not enabled("syntax_note"):          # 2.2: features
@@ -389,6 +575,7 @@ def write_file(root: Path, shadow: Path, args: dict, mediator=None,
     p = _resolve_in_root(root, args["path"])
     if mediator is not None:
         _check_locked(mediator, root, p)
+    before = _overwrite_guard(p, args["path"], seen)
     snap = _snapshot(root, p, shadow)
     p.parent.mkdir(parents=True, exist_ok=True)
     own = _own_code(root, p)
@@ -406,7 +593,43 @@ def write_file(root: Path, shadow: Path, args: dict, mediator=None,
         seen[str(p.resolve())] = args["content"].replace("\r\n", "\n")
     return (f"wrote {args['path']} ({len(args['content'])} bytes)"
             + (f" [shadow:{snap}]" if snap else " [new file]")
-            + gate + f" | {verdict}" + syntax_note(p))
+            + gate + f" | {verdict}" + syntax_note(p, before))
+
+
+def _overwrite_guard(p: Path, rel: str, seen: dict | None) -> str | None:
+    """A whole-file write over an existing file must not throw away what Aura
+    never saw: the file must have been read — or written — by Aura in this
+    chat, and be unchanged since. Returns the text it replaces (for "was it
+    broken before?"), or None for a new file. Empty files and files too big to
+    track pass.
+    """
+    if seen is None or not p.is_file():
+        return None
+    try:
+        size = p.stat().st_size
+        with open(p, encoding="utf-8", errors="replace", newline="") as f:
+            now = f.read().replace("\r\n", "\n") if size <= 4_000_000 else None
+    except OSError:
+        return None
+    if now is None or not now.strip():
+        return now
+    key = str(p.resolve())
+    if key not in seen:
+        raise ValueError(
+            f"{rel} already exists and you have not read it in this chat — nothing was "
+            "written. Read it first (read_file), then write the whole new version; for a "
+            "change to part of it use edit_file.")
+    if seen[key] != now:
+        import difflib
+        diff = list(difflib.unified_diff(seen[key].split("\n"), now.split("\n"),
+                                         "as you read it", "now", n=1, lineterm=""))
+        seen[key] = now            # Shown once; writing again after this goes through
+        raise ValueError(
+            f"{rel} changed since you last read or wrote it (a command, a formatter, or "
+            "the user) — nothing was written. What changed:\n" + "\n".join(diff[:40])
+            + ("\n…" if len(diff) > 40 else "")
+            + "\nKeep those changes in what you write, or read it again first.")
+    return now
 
 
 def line_tag(line: str) -> str:
@@ -637,7 +860,80 @@ def edit_file(root: Path, shadow: Path, args: dict, mediator=None,
     detail = "".join("\n" + n.split("\n", 1)[1] for n in notes if "\n" in n)
     tag = " [fuzzy-match]" if any("matched (" in n for n in notes) else ""
     return (f"edited {args['path']} ({summary}){tag} [shadow:{snap}]{gate} | "
-            f"{verdict}{detail}" + syntax_note(p))
+            f"{verdict}{detail}" + syntax_note(p, text))
+
+
+def notebook_edit(root: Path, shadow: Path, args: dict, mediator=None,
+                  seen: dict | None = None) -> str:
+    """Change one cell of a Jupyter notebook: replace its source, insert a new
+    cell before/after it, or delete it. Cells are numbered as read_file shows
+    them (1 = first). A replaced or new code cell has no outputs until it is
+    run again. The notebook keeps its own layout (indent 1, like Jupyter writes
+    it).
+    """
+    p = _resolve_in_root(root, args["path"])
+    if p.suffix.lower() != ".ipynb":
+        raise ValueError("notebook_edit is for .ipynb notebooks — use edit_file for other files")
+    if mediator is not None:
+        _check_locked(mediator, root, p)
+    if not p.is_file():
+        raise _missing(root, args["path"])
+    action = str(args.get("action") or "replace").lower()
+    if action not in ("replace", "insert_before", "insert_after", "delete"):
+        raise ValueError("action is replace, insert_before, insert_after or delete")
+    raw = p.read_text(encoding="utf-8")
+    key = str(p.resolve())
+    if seen is not None and key not in seen:
+        raise ValueError(f"read {args['path']} first (read_file) so the cell numbers are "
+                         "the ones you saw — nothing was changed")
+    if seen is not None and seen[key] != raw.replace("\r\n", "\n"):
+        seen[key] = raw.replace("\r\n", "\n")
+        raise ValueError(f"{args['path']} changed since you read it — read it again; "
+                         "nothing was changed")
+    nb = json.loads(raw)
+    cells = nb.setdefault("cells", [])
+    try:
+        n = int(args.get("cell"))
+    except (TypeError, ValueError):
+        raise ValueError("give cell= (the number read_file shows, 1 = first)")
+    if not (1 <= n <= len(cells)) and not (action.startswith("insert") and not cells):
+        raise ValueError(f"there is no cell {n} — the notebook has {len(cells)} cell(s)")
+    src = args.get("source")
+    if action != "delete" and src is None:
+        raise ValueError("give source= (the cell's new text)")
+    kind = str(args.get("cell_type") or "").lower()
+    lines = (str(src).splitlines(keepends=True) if src is not None else [])
+
+    def _fresh(kind_: str) -> dict:
+        cell = {"cell_type": kind_, "metadata": {}, "source": lines}
+        if kind_ == "code":
+            cell.update(execution_count=None, outputs=[])
+        if nb.get("nbformat", 4) >= 4 and nb.get("nbformat_minor", 0) >= 5:
+            import uuid
+            cell["id"] = uuid.uuid4().hex[:8]
+        return cell
+    if action == "replace":
+        c = cells[n - 1]
+        if kind and kind != c.get("cell_type"):
+            cells[n - 1] = _fresh(kind)
+        else:
+            c["source"] = lines
+            if c.get("cell_type") == "code":
+                c["outputs"], c["execution_count"] = [], None
+        what = f"replaced cell {n}"
+    elif action == "delete":
+        cells.pop(n - 1)
+        what = f"deleted cell {n} ({len(cells)} left)"
+    else:
+        at = (n - 1) if action == "insert_before" else n
+        cells.insert(max(0, min(at, len(cells))), _fresh(kind or "code"))
+        what = f"inserted a {kind or 'code'} cell as cell {at + 1}"
+    snap = _snapshot(root, p, shadow)
+    out = json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
+    p.write_text(out, encoding="utf-8", newline="")
+    if seen is not None:
+        seen[key] = out
+    return f"{what} in {args['path']} [shadow:{snap}] — cell numbers after it may have moved"
 
 
 def restore(shadow: Path, root: Path, snapshot_id: str | None = None) -> str:
@@ -691,6 +987,8 @@ def register(mediator: Mediator, root: Path,
         WRITE_FILE, BlastRadius.WRITE, lambda a: None))
     mediator.register(ToolSpec(
         EDIT_FILE, BlastRadius.WRITE, lambda a: None))
+    mediator.register(ToolSpec(
+        "notebook_edit", BlastRadius.WRITE, lambda a: None))
 
     # What Aura last read or wrote per file: the stale-read guard
     seen: dict[str, str] = {}
@@ -702,4 +1000,5 @@ def register(mediator: Mediator, root: Path,
         READ_FILE: lambda a: read_file(root, a, store, seen),
         WRITE_FILE: lambda a: write_file(root, shadow, a, mediator, seen),
         EDIT_FILE: lambda a: edit_file(root, shadow, a, mediator, seen),
+        "notebook_edit": lambda a: notebook_edit(root, shadow, a, mediator, seen),
     }

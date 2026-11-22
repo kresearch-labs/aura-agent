@@ -62,6 +62,12 @@ def main() -> int:
     r = subprocess.run([a.uv, "build", "--out-dir", str(out)], cwd=ROOT)
     if r.returncode != 0:
         sys.exit("✗ the build failed")
+    # the hub's team page must ride the package (it is built, not kept in git)
+    import zipfile
+    wheel = out / f"aura_agent-{ver}-py3-none-any.whl"
+    if wheel.exists() and "aura_agent/webui/team/team.html" not in zipfile.ZipFile(wheel).namelist():
+        sys.exit("✗ the team page isn't in the package: build it first "
+                 "(in web/: pnpm install, then pnpm build)")
     for name in ("install.sh", "install.ps1"):
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         text = stamp(text, tag, "AURA_TAG" if name.endswith(".sh") else "AuraTag")

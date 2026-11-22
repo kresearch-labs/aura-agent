@@ -4,14 +4,7 @@
 message per line. Ours, no add-on (the official library would be a new
 dependency).
 
-The same engine as the chat screen — the same safety gate, undo, Persona — only
-the screen is the editor's: your message session/prompt → loop.run Aura's reply
-session/update agent_message_chunk / agent_thought_chunk tool rows tool_call /
-tool_call_update (a diff for every edit) the plan plan a yes card
-session/request_permission (the editor's own prompt) act/plan/discuss session
-modes (session/set_mode) stop session/cancel old chats session/load replays an
-Aura chat Aura's own printing goes to stderr — stdout carries only the
-protocol.
+The same engine as the chat screen.
 """
 from __future__ import annotations
 
@@ -28,8 +21,8 @@ MODES = [
     {"id": "plan", "name": "Plan", "description": "reads and plans, changes nothing"},
     {"id": "discuss", "name": "Discuss", "description": "talks it through, starts nothing"},
 ]
-_KIND = {"read_file": "read", "list_files": "read", "view_image": "read", "notes": "read",
-         "search_files": "search", "code_nav": "search", "history_search": "search",
+_KIND = {"read_file": "read", "list_files": "read", "locate": "search", "recall": "read", "decisions": "think", "view_image": "read", "notes": "read",
+         "search_files": "search", "notebook_edit": "edit", "code_nav": "search", "history_search": "search",
          "symbols": "search", "write_file": "edit", "edit_file": "edit",
          "run_command": "execute", "run_code": "execute", "process_start": "execute",
          "run_checks": "execute", "web_crawl": "fetch", "web_search": "fetch",

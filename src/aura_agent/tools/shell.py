@@ -20,6 +20,7 @@ from ..mediator import BlastRadius, Mediator, ToolSpec, Violation
 from .artifacts import ARTIFACT_INLINE_LIMIT, head_tail_preview, store_artifact
 from ..eventlog import log_swallowed
 from ..tool_names import RUN_COMMAND
+from ..sandbox_os import HANDOFF, MovedToBackground
 
 DEFAULT_BANNED = ("rm -rf /", "shutdown", "reboot", "mkfs", "dd if=",
                   ":(){", "chmod -R 777 /", "> /dev/sda")
@@ -39,6 +40,13 @@ _NET_FAIL = re.compile(
     r"getaddrinfo|network is unreachable|failed to establish a new connection|urlopen error|"
     r"nodename nor servname|enotfound|eai_again|connection refused|operation not permitted.*connect|"
     r"unable to access 'https?://|no route to host", re.I)
+# What a program prints when it wanted to ask something and found no keyboard
+_NEEDS_INPUT = re.compile(
+    r"EOF when reading a line|EOFError|end of file reached|unexpected end of input|"
+    r"the input device is not a TTY|stdin is not a (tty|terminal)|not a terminal|"
+    r"Inappropriate ioctl for device|cannot prompt|unable to prompt|no tty present|"
+    r"non-interactive mode|could not read (Username|Password)|terminal prompts disabled|"
+    r"Aborted!$", re.I | re.M)
 _MUTATING_WORDS = ("rm", "rmdir", "mv", "dd", "chmod", "chown", "truncate",
                    "ln", "cp", "tee", "shutdown", "reboot", "mkfs")
 
@@ -121,6 +129,7 @@ def register(mediator: Mediator, dispatch: dict,
                     f"banned command token '{tok}' (allowlist override available)")
         timeout = float(args.get("timeout", mediator.budgets.per_call_timeout))
         _site_ok = _site_ok_for(mediator)
+        _handoff_token = None
         try:
             # BUILD 4+5: OS containment — commands run inside bubblewrap
             # (fs: write only engagement root + /tmp; network off unless the
@@ -147,6 +156,12 @@ def register(mediator: Mediator, dispatch: dict,
             except Exception:
                 _extra_env = None    # Broker must never kill the shell path
             from ..sandbox import run_outside, run_sandboxed
+            # past its time limit the command moves to the background list
+            # instead of being killed (it keeps its output; the model is told
+            # when it ends) — see sandbox_os.HANDOFF
+            _reg = getattr(mediator, "_procs", None)
+            if _reg is not None:
+                _handoff_token = HANDOFF.set(_reg.taker())
             if getattr(mediator, "outside_box_ok", False):
                 # the user said "always" for this chat: their computer, no box
                 proc, sandbox_note = run_outside(cmd, _cwd, timeout, _extra_env)
@@ -213,6 +228,15 @@ def register(mediator: Mediator, dispatch: dict,
                     "this command has no network: the sandbox keeps it off. Run it again "
                     "with network: true — Aura asks the user with a card. Never tell the "
                     "user to run a command themselves.")
+            # A program that wanted to ask something: run_command gives it no
+            # keyboard, so it failed on "end of input" — say why and the way
+            # that works (a background process can be answered)
+            if proc.returncode != 0 and _NEEDS_INPUT.search(so + se):
+                payload["needs_input"] = (
+                    "it stopped because it wanted an answer, and run_command gives a "
+                    "program no keyboard. Look for a flag that answers for it (--yes, -y, "
+                    "--non-interactive), or start it with process_start and answer with "
+                    "process_input; ask the user what to answer when it is their choice")
             # BUILD 1 (shell side): mutating commands get a verification
             # directive in the result — the agent must confirm the effect
             # from disk before building on it (Gemini CLI lesson)
@@ -246,14 +270,26 @@ def register(mediator: Mediator, dispatch: dict,
                                "total_bytes": getattr(proc, "out_bytes", len(so) + len(se)),
                                "artifact_ref": ref, "duration_ms": 0},
                               ensure_ascii=False)
+        except MovedToBackground as _mv:
+            # still running, now as a background process (not an error)
+            data = json.dumps({"cmd": cmd, "exit_code": None, "still_running": _mv.text},
+                              ensure_ascii=False)
+            return json.dumps({"ok": True, "exit_code": None, "result": data,
+                               "truncated": False, "total_bytes": 0,
+                               "artifact_ref": None, "duration_ms": 0},
+                              ensure_ascii=False)
         except subprocess.TimeoutExpired as _te:
             from ..sandbox_os import Stopped
             if isinstance(_te, Stopped):
-                raise Violation("run_command: stopped — the user stopped the task, the "
-                                "command and everything it started were ended") from None
+                from ..stopping import stopped_text
+                raise Violation(f"{stopped_text()} — the command and everything it "
+                                "started were ended") from None
             raise Violation(f"run_command: timeout after {timeout:.0f}s — the command and "
                             "everything it started were stopped; run a smaller part "
                             "(for tests: only the ones related to the change)")
+        finally:
+            if _handoff_token is not None:
+                HANDOFF.reset(_handoff_token)
 
     mediator.register(ToolSpec(
         RUN_COMMAND, BlastRadius.EXECUTE,

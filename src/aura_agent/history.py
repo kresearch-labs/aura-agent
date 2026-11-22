@@ -171,13 +171,13 @@ def _index_chat(conn, proj: str, f: Path, done: int) -> int:
     end = data.rfind(b"\n")
     if end < 0:
         return done
-    stem = f.stem
+    stem = _chat_stem(f)
     for raw in data[:end + 1].splitlines():
         try:
             rec = json.loads(raw)
         except (ValueError, UnicodeDecodeError):
             continue
-        if not isinstance(rec, dict) or rec.get("record") or \
+        if not isinstance(rec, dict) or rec.get("record") or rec.get("carried") or \
                 rec.get("role") not in ("user", "assistant", "tool"):
             continue
         body, tool = _body(rec)
@@ -204,6 +204,30 @@ def _index_chat(conn, proj: str, f: Path, done: int) -> int:
             if _has(conn, "grams"):
                 conn.execute("INSERT INTO grams(rowid, body) VALUES (?,?)", (rid, body))
     return done + end + 1
+
+
+def _chat_stem(f: Path) -> str:
+    """The chat a file belongs to: its own name, or — for a finished part in
+    <chat>.parts/ — the chat's."""
+    if f.parent.name.endswith(".parts"):
+        return f.parent.name[: -len(".parts")]
+    return f.stem
+
+
+def _new_part(f: Path) -> bool:
+    """The chat file starts a new part (its earlier part was put away): it
+    got smaller without being rewritten."""
+    try:
+        with f.open(encoding="utf-8") as fh:
+            for _ in range(8):
+                line = fh.readline()
+                if not line:
+                    break
+                if '"record": "part"' in line:
+                    return True
+    except OSError:
+        pass
+    return False
 
 
 def _forget_chat(conn, proj: str, stem: str) -> None:
@@ -267,7 +291,9 @@ def update(current: Path | None = None) -> int:
         live: set[str] = set()
         for nb in notebooks(current):
             proj = project_name(nb)
-            for f in sorted((nb / "sessions").glob("*.jsonl")):   # Oldest first
+            sess = nb / "sessions"
+            files = sorted(sess.glob("*.parts/part-*.jsonl")) + sorted(sess.glob("*.jsonl"))
+            for f in files:   # Finished parts first, then the chats (oldest first)
                 key = str(f)
                 live.add(key)
                 size = f.stat().st_size
@@ -275,12 +301,15 @@ def update(current: Path | None = None) -> int:
                 done = row[0] if row else 0
                 if size == done:
                     continue
-                if size < done:                       # Rewritten: read again
-                    _forget_chat(conn, proj, f.stem)
-                    done = 0
+                if size < done:
+                    if _new_part(f):
+                        done = 0                      # A new part: read it, keep the rest
+                    else:                             # Rewritten: read again
+                        _forget_chat(conn, proj, _chat_stem(f))
+                        done = 0
                 new = _index_chat(conn, proj, f, done)
                 conn.execute("INSERT OR REPLACE INTO files VALUES (?,?,?,?)",
-                             (key, proj, f.stem, new))
+                             (key, proj, _chat_stem(f), new))
                 n += 1
             _index_receipts(conn, nb, proj)
             _index_results(conn, nb, proj)
@@ -437,8 +466,15 @@ def _filters(a: dict, current_proj: str, skip_session: str) -> tuple[str, list]:
                      "t.session=m.session AND t.path LIKE ?)")
         vals.append(f"%{a['file']}%")
     if skip_session:
-        where.append("NOT (m.project = ? AND m.session = ?)")
-        vals += [current_proj, skip_session]
+        # "stem@N": the chat in front of the model, from seq N on — its
+        # earlier, put-away parts stay searchable (chat_parts)
+        stem, _, frm = skip_session.partition("@")
+        if frm.isdigit() and int(frm) > 0:
+            where.append("NOT (m.project = ? AND m.session = ? AND m.seq >= ?)")
+            vals += [current_proj, stem, int(frm)]
+        else:
+            where.append("NOT (m.project = ? AND m.session = ?)")
+            vals += [current_proj, stem]
     return (" AND ".join(where) or "1"), vals
 
 
@@ -829,8 +865,14 @@ def register(mediator, eng: Path, dispatch: dict | None = None) -> None:
         if ref is not None:
             try:
                 sess = Path(ref.path).stem
+                if int(getattr(ref, "part", 1) or 1) > 1:
+                    # a chat in parts: only the part in front of the model is
+                    # left out — its earlier parts are found like any chat
+                    with open(ref.path, encoding="utf-8") as _fh:
+                        _first = json.loads(_fh.readline() or "{}").get("seq") or 0
+                    sess = f"{sess}@{int(_first)}"
             except Exception:                           # noqa: BLE001
-                sess = ""
+                sess = sess or ""
         if isinstance(a, dict) and a.get("session"):
             # reading one chat: the same text every time (chats only grow)
             # — the proof check re-runs these, so never answered from memory

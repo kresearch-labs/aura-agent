@@ -514,6 +514,60 @@ def _options() -> list[Option]:
                       "how many background processes (servers, watchers) may run "
                       "at the same time", "int", 8, lo=1, hi=32, getter=g, setter=s,
                       words=("server", "processes", "limit", "background")))
+    g, s = _plain("memory.parts")
+    out.append(Option("memory.parts", "Memory", "keep long chats in indexed parts",
+                      "a long chat is kept as a chain of parts: each full part is put away "
+                      "unchanged and indexed, Aura works from the newest part and looks "
+                      "older ones up word for word — instead of squashing summaries into "
+                      "summaries; plus a list of the chat's decisions where the newest wins",
+                      "bool", True, getter=g, setter=s,
+                      words=("memory", "long chat", "parts", "index", "compaction", "summary",
+                             "decisions", "forget", "remember")))
+    g, s = _plain("memory.part_tokens")
+    out.append(Option("memory.part_tokens", "Memory", "size of a chat part (tokens)",
+                      "how much chat one part holds before it is put away and indexed — "
+                      "the same on every model, so a small and a big model keep the same parts",
+                      "int", 24000, lo=8000, hi=200000, getter=g, setter=s,
+                      words=("memory", "parts", "size", "tokens", "long chat")))
+    g, s = _plain("memory.facts")
+    out.append(Option("memory.facts", "Memory", "keep the chat's facts up to date",
+                      "a short model call (in the background) reads the user's new messages "
+                      "when a chat part is put away, and right away when a message says "
+                      "something changed or asks to forget something; it updates the chat's "
+                      "'what is true now' list — new facts added, outdated ones replaced, "
+                      "ones a change may affect marked, forgotten ones removed",
+                      "bool", True, getter=g, setter=s,
+                      words=("memory", "facts", "changes", "stale", "outdated", "forget", "long chat")))
+    g, s = _plain("memory.auto_recall")
+    out.append(Option("memory.auto_recall", "Memory", "show earlier matching chat",
+                      "in a long chat, before each answer Aura quotes the few earlier "
+                      "exchanges (from closed parts) that share the most specific words with "
+                      "your message, so the model sees them without having to search — "
+                      "found by code, about 1k tokens",
+                      "bool", True, getter=g, setter=s,
+                      words=("memory", "recall", "earlier", "long chat", "remember")))
+    g, s = _plain("background.wake")
+    out.append(Option("background.wake", "Background", "wake up for background news",
+                      "when Aura is idle and a background program it started ends, asks a "
+                      "question, or prints a line it is watching for, Aura takes a short "
+                      "turn to tell you and carry on; off = it waits for your next message",
+                      "bool", True, getter=g, setter=s,
+                      words=("wake", "notify", "background", "done", "finished", "watch")))
+    g, s = _plain("background.windows_terminal")
+    out.append(Option("background.windows_terminal", "Background", "a real terminal on Windows",
+                      "give background programs a real terminal (ConPTY) on Windows, so "
+                      "they print as they go and show their questions; off = plain pipes. "
+                      "Linux and macOS always have one",
+                      "bool", True, getter=g, setter=s,
+                      words=("terminal", "conpty", "pty", "windows", "background", "prompt")))
+    g, s = _plain("teams.enabled")
+    out.append(Option("teams.enabled", "Teams", "Teams",
+                      "off until Teams is set up: no team tools for the model, "
+                      "no TEAM panel, no work events, /team answers 'not set "
+                      "up'. Flips only when 'aura setup teams' takes this "
+                      "machine to its own hub or connects it to one",
+                      "bool", False, getter=g, setter=s,
+                      words=("team", "board", "tasks", "hub", "shared")))
     return out
 
 

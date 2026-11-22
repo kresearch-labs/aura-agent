@@ -71,12 +71,15 @@ def spawn_background(parent_root: Path, profile, scope,
     from .paths import workspace_for as _workspace_for
 
     def _run():
+        from .sandbox_os import detach_from_user_stop
+        detach_from_user_stop()           # Its own stop; the user's stop leaves it be
         try:
             out = run_delegate(parent_root, lane_profile, scope,
                                audit_path, task, name=name,
                                max_steps=max_steps, role=role,
                                steer_queue=handle["steer"],
-                               workspace=_workspace_for(parent_root))
+                               workspace=_workspace_for(parent_root),
+                               stop_with_user=False)
             handle["summary"] = out.get("summary", "")
             handle["steps"] = out.get("steps")
             handle["changes"] = out.get("changes") or []

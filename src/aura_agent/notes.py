@@ -107,9 +107,9 @@ def _stub(p: dict) -> dict:
 
 
 def stamp(ts: float) -> str:
-    """'[Wed 22 Oct 14:05] ' — when the user's message arrived."""
+    """'[Wed 22 Oct 2026 14:05] ' — when the user's message arrived."""
     import time as _t
-    return f"[{_t.strftime('%a %d %b %H:%M', _t.localtime(ts))}] "
+    return f"[{_t.strftime('%a %d %b %Y %H:%M', _t.localtime(ts))}] "
 
 
 def for_wire(messages: list[dict]) -> list[dict]:

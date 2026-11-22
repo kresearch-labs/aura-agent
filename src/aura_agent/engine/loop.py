@@ -12,7 +12,9 @@ import os
 import re
 import sys
 import secrets
+import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -482,11 +484,7 @@ answers short.""")
 def classify_scope(task: str, root=None) -> str:
     """Plan classifier (LOCAL, zero tokens, zero model calls).
 
-    Decides the planning posture BEFORE the first LLM call: "multi" —
-    multi-machine / multi-phase task: full-horizon plan pays for itself (: 2-3x
-    fewer tokens than reactive re-planning) "single" — focused quick task: skip
-    the plan ritual entirely (todo_write for 1-2 steps is pure overhead)
-    Heuristics on the task text only.
+    Decides the planning posture BEFORE the first LLM call.
     """
     if not task:
         return "single"
@@ -509,14 +507,9 @@ def classify_scope(task: str, root=None) -> str:
 
 
 def planning_instruction(task: str, root=None) -> str:
-    """Scope-classified planning posture. Zero-token accounting: - multi -> ""
-    (TODO_INSTRUCTION in the static prompt already mandates the full-horizon
-    plan; a second line would be pure add) - single -> one short line that
-    SUPPRESSES the plan ritual. Net negative: without it, todo_write creates
-    items and the render block then injects EVERY turn.
+    """Scope-classified planning posture. Net negative: without it, todo_write
+    creates items and the render block then injects EVERY turn.
     """
-    # the plan is the user's switch now: off = no plan talk at all; on = the
-    # per-step plan block says what to do
     return ""
 
 
@@ -617,7 +610,11 @@ class AgentLoop:
                 summary_text = res.content or ""
         except Exception:
             summary_text = ""                   # Heuristic fallback below
-        c = (self.governor.compact_with_summary(msgs, summary_text, focus=focus)
+        _parts = self._parts_on()
+        c = (self.governor.compact_with_summary(
+                 msgs, summary_text, focus=focus,
+                 state=self._parts_state(session) if _parts else "",
+                 carry_earlier=not _parts)
              if self.governor else None)
         if c is None:
             return {"pruned": n_pruned, "dropped": 0, "llm": False}
@@ -1147,7 +1144,7 @@ class AgentLoop:
         return True
 
     def _plan_items(self) -> list[dict]:
-        """This chat's plan items — empty while the plan switch is off."""
+        """This chat's plan items."""
         try:
             return _load_todos(self.root, getattr(self.m, "plan_chat", ""),
                                getattr(self.m, "plan_forced", False))
@@ -1354,9 +1351,6 @@ class AgentLoop:
                           or getattr(self.m.tools.get(t["function"]["name"]), "blast_radius",
                                      None) == _BR.READ]
             if getattr(self.m, "mode", "act") == "plan" and _tools:
-                # Plan: only what plan mode allows is offered — the model can't
-                # reach for a command or an edit it would only be refused; the
-                # plan tool only while the plan switch is on
                 from ..todo import plan_on as _plan_sw
                 _ok = set(getattr(self.m, "plan_safe", set())) | {"tools_find", "use_tool",
                                                                    "run_command"}   # Looking only
@@ -1421,6 +1415,12 @@ class AgentLoop:
         # and can retry from; never execute on guessed-empty args.
         if parse_error:
             return {"status": "error", "error": parse_error}
+        # the user stopped the task: the tools still queued in this step are
+        # not started (each call still gets its answer, so the chat stays whole)
+        from ..stopping import clear_progress, stopped, stopped_text
+        if stopped():
+            return {"status": "error", "error": f"{name} not run — {stopped_text()}"}
+        clear_progress()                     # The live line shows this tool's own progress
         fn = self.dispatch.get(name)
         if fn is None:
             return {"status": "error", "error": f"unknown tool '{name}'"}
@@ -1666,6 +1666,9 @@ class AgentLoop:
         _context_for_call → _call_model → _finish_or_resume (no tool
         calls) or _run_tools."""
         kill_check = kill_check or (lambda: False)
+        from pathlib import Path as _P
+        self.chat_id = _P(session.path).stem if getattr(
+            session, "path", None) is not None else getattr(self, "chat_id", "")
         self._start_run(session, task, work_dir)
         go = self._teams_start(session, task)
         if go is not None and not go["go"]:
@@ -1675,6 +1678,7 @@ class AgentLoop:
             return rec
         if go is not None and go["context"]:
             task = task + "\n\n" + go["context"]
+        _from_seq = getattr(session, "seq", 0)
         messages = self._open_turn(session, task)
         watch = self._machine_watch()
         try:
@@ -1682,9 +1686,117 @@ class AgentLoop:
         finally:
             if watch is not None:
                 watch.stop()
+        self._after_exchange(session, _from_seq, stopped=bool(kill_check()))
         self._skills_outcome(rec)
         self._teams_finish(rec)
         return rec
+
+    def _parts_on(self) -> bool:
+        try:
+            from ..options import get as _opt
+            return bool(_opt("memory.parts"))
+        except Exception:                            # noqa: BLE001
+            return True
+
+    def _after_exchange(self, session, from_seq: int, stopped: bool = False) -> None:
+        """The exchange is over: its one index line is written (by code), and a
+        full part — not after a stop — is put away and the next one started
+        with the last exchange word for word (chat_parts)."""
+        if not self._parts_on() or getattr(session, "held", False):
+            return
+        path = getattr(session, "path", None)
+        if path is None or not Path(path).exists():
+            return
+        try:
+            from .. import chat_parts as CP
+            recs = [r for r in CP._read_jsonl(Path(path))
+                    if int(r.get("seq") or 0) > from_seq and not r.get("record")]
+            if recs:
+                CP.write_exchange(Path(path), recs)
+            try:
+                from ..options import get as _opt
+                size = int(_opt("memory.part_tokens"))
+            except Exception:                        # noqa: BLE001
+                size = CP.PART_TOKENS
+            if stopped or not CP.should_roll(Path(path), size):
+                # the user said something changed (or asked to forget): the
+                # list is brought up to date now, not when the part closes
+                from ..notes import is_users_words, users_words
+                said = " ".join(str(users_words(r) or "") for r in recs if is_users_words(r))
+                if not stopped and CP.says_change(said):
+                    self._facts_pass(Path(path), "a change was mentioned")
+                return
+            master = session.roll_part(CP.carry_records(Path(path)))
+            if master:
+                self.on_event("notice", {"text": (
+                    f"this chat's part {master['part']} is full — kept unchanged and indexed; "
+                    f"the chat goes on in part {master['part'] + 1} (recall finds anything "
+                    "earlier, word for word)"), "calm": True})
+                self._facts_pass(Path(path), f"part {master['part']} closed")
+        except Exception as _swallowed:              # noqa: BLE001
+            log_swallowed("loop.chat_parts", _swallowed)   # Never stops the chat
+
+    def _facts_pass(self, path: Path, why: str) -> None:
+        """One side call (in the background) that brings the chat's 'what is
+        true now' list up to date with the user's messages since the last pass:
+        new facts, replacements, knock-on doubts, forgetting (option
+        memory.facts). Runs when a part closes and when a message says
+        something changed."""
+        try:
+            from ..options import get as _opt
+            if not _opt("memory.facts"):
+                return
+        except Exception:                            # noqa: BLE001
+            pass
+        from .. import chat_parts as CP
+
+        def work():
+            try:
+                text, when = CP.facts_request(path)
+                if not when:
+                    return
+                # the JSON ask goes in the instructions: the side call that
+                # shares the chat's cached start sends no separate json_ask
+                res = self._side_chat(self.llm, CP.FACTS_INSTRUCTIONS + "\n\n" + CP.FACTS_JSON,
+                                      text, json_ask=CP.FACTS_JSON, temperature=0)
+                done = CP.apply_facts(path, str(getattr(res, "content", "") or ""), when,
+                                      CP.forget_requests(path, when))
+                if done:
+                    c = Counter(done)
+                    self.on_event("notice", {"text": (
+                        f"what is true now — {why}: {c['add']} noted, {c['replace']} replaced"
+                        + (f", {c['doubt']} marked may-be-outdated" if c["doubt"] else "")
+                        + (f", {c['forget']} forgotten" if c["forget"] else "")
+                        + " (decisions list=all)"), "calm": True})
+            except Exception as _swallowed:          # noqa: BLE001
+                log_swallowed("loop.chat_facts", _swallowed)
+
+        self.wait_facts()                            # One at a time, in order
+        t = threading.Thread(target=work, name="aura-chat-facts", daemon=True)
+        self._facts_job = t
+        t.start()
+
+    def wait_facts(self, timeout: float = 180.0) -> None:
+        """A fact pass still running finishes before the next run reads the list."""
+        t = getattr(self, "_facts_job", None)
+        if t is not None and t.is_alive():
+            t.join(timeout)
+
+    def _parts_state(self, session) -> str:
+        """After a squash: this part's latest index lines (code-written, exact
+        pointers) instead of a chain of earlier summaries."""
+        try:
+            from .. import chat_parts as CP
+            path = Path(session.path)
+            n = CP.current_part(path)
+            rows = CP.index_entries(path, n)[-12:]
+            if not rows and n == 1:
+                return ""
+            return (f"[THIS CHAT — part {n}; the index has a line for every exchange. A detail "
+                    "you no longer see: recall it (recall seq=N), do not guess]\n"
+                    + "\n".join(r["line"] for r in rows))
+        except Exception:                            # noqa: BLE001
+            return ""
 
     def _machine_watch(self):
         """Machine on: watch free memory while this run works; a low-memory note
@@ -1819,12 +1931,10 @@ class AgentLoop:
             res, messages = self._call_model(session, messages, step)
             if getattr(res, "finish_reason", None) == "cancelled" \
                     and getattr(self, "urgent", False) and not kill_check():
-                # Ctrl+Enter: the user cut this reply short to say something now —
-                # the half reply is dropped and their message is read at once
-                self.urgent = False
-                _ev = getattr(self.llm, "cancel_event", None)
-                if _ev is not None:
-                    _ev.clear()
+                # Shift+Enter / Ctrl+Enter: the user cut this reply short to say
+                # something now — the half reply is dropped and their message is
+                # read at once
+                self._take_urgent()
                 self.on_event("notice", {"text": "cut short — reading your message now",
                                          "calm": True})
                 continue
@@ -1835,6 +1945,11 @@ class AgentLoop:
                     return rec
                 continue
             self._run_tools(session, res, step)
+            if getattr(self, "urgent", False) and not kill_check():
+                # Shift+Enter while a tool ran: the tool was ended for the user's
+                # new message — clear the stop and read it now (no model call
+                # is started just to be cut off)
+                self._take_urgent()
             # pblocks: learn at every step's input->output (the tested build's
             # design): this step's action + the world's answers = a lesson pair
             try:
@@ -1846,10 +1961,8 @@ class AgentLoop:
             except Exception as _swallowed:      # noqa: BLE001
                 log_swallowed("loop.pblock_step_learn", _swallowed)
             if self._answered_and_ticked(res):
-                # Bug: the answer came twice — the model wrote it while ticking
-                # the plan done, then wrote it again. The answer with only
-                # "done" ticks, nothing left open, IS the end: no second model
-                # call
+                # The answer with only "done" ticks, nothing left open, IS the
+                # end: no second model call
                 import copy as _copy
                 _end = _copy.copy(res)
                 _end.tool_calls = []
@@ -1976,6 +2089,7 @@ class AgentLoop:
     def _start_run(self, session, task: str, work_dir) -> None:
         """Per-run state: workspace, rules folder, skill-pack limits, resets, receipt."""
         self._later = []          # Messages typed mid-task that run after it
+        self.wait_facts()         # The list this run reads is complete
         # a yes to running outside code covers this task only; the checker model
         # decides commands the rules can't read (action_risk.py)
         self.m.task_grants = set()
@@ -2017,7 +2131,6 @@ class AgentLoop:
             log_swallowed("loop.pack_limits", _swallowed)
         self._skip_guard_used = 0    # Silent-skip guard reset per run
         self._run_t0 = time.time()   # Plan items made in this run (skip guard)
-        # the plan of THIS chat (the switch decides whether there is one)
         self.m.plan_chat = Path(getattr(session, "path", "") or "chat").stem
         try:
             from ..session_titles import session_title
@@ -2034,7 +2147,7 @@ class AgentLoop:
         self.m.plan_forced = False
         try:
             from ..todo import archive_done
-            archive_done(self.root, self.m.plan_chat)  # The last task's finished steps leave the plan
+            archive_done(self.root, self.m.plan_chat)
         except Exception as _swallowed:
             log_swallowed("loop.todo_archive", _swallowed)
         self._run_failures = []      # 1.4: reviewer sees THIS run's failures
@@ -2586,6 +2699,14 @@ class AgentLoop:
                     self.on_event("notice", {"text": _note.splitlines()[0][:160]})
                     session.note(_note, step=step)
                     messages = messages + [{"role": "user", "content": aura_note(_note)}]
+                for _p, _hits in _reg.watch_untold():
+                    _shown = _scrub(_hits[-10:])
+                    _note = (f"[BACKGROUND] {_p.id} '{_p.cmd[:80]}' printed what you are "
+                             f"watching for ({len(_hits)} line{'s' if len(_hits) != 1 else ''}):\n"
+                             + "\n".join(_shown))
+                    self.on_event("notice", {"text": _note.splitlines()[0][:160]})
+                    session.note(_note, step=step)
+                    messages = messages + [{"role": "user", "content": aura_note(_note)}]
                 for _p in _reg.ended_unreported():
                     _last = [ln for ln in _scrub(_p.tail(8)) if ln.strip()]
                     _note = (f"[BACKGROUND] {_p.id} '{_p.cmd[:80]}' exited with code "
@@ -2657,7 +2778,12 @@ class AgentLoop:
             self._thrash_told = told
         # Governor gate — compact when over 60% of ctx window
         if self.governor and self.governor.needs_compaction(messages):
-            c = self.governor.compact(messages, state=self._task_state(task, messages))
+            _parts = self._parts_on()
+            _state = self._task_state(task, messages)
+            if _parts:
+                _ps = self._parts_state(session)
+                _state = (_state + "\n" + _ps) if _state and _ps else (_state or _ps)
+            c = self.governor.compact(messages, state=_state, carry_earlier=not _parts)
             messages = Governor.as_messages(c)
             self._reads_seen = {}          # Earlier outputs are gone now
             # Persist compaction so replay doesn't resurrect turns
@@ -2690,7 +2816,8 @@ class AgentLoop:
                 if inj:
                     messages = messages + [{
                         "role": "system",
-                        "content": "[AGENT JOURNAL — last entries]\n" + inj,
+                        "content": ("[AGENT JOURNAL — last entries; Aura keeps it outside"
+                                    " the project, add to it with notes_write]\n" + inj),
                     }]
         # The project part (rules pointer, memory, skills index) sits right
         # after the system prompt.
@@ -2752,6 +2879,30 @@ class AgentLoop:
                 project_part.append({"role": "system", "content": block})
         except Exception as _swallowed:
             log_swallowed("loop.memory_inject", _swallowed)  # Memory must never kill the loop
+        # This chat's decisions — what is true now, newest first (chat_parts)
+        if self._parts_on():
+            try:
+                from ..chat_parts import decisions_block
+                _db = decisions_block(Path(session.path)) if getattr(session, "path", None) else ""
+                if _db:
+                    project_part.append({"role": "system", "content": _db})
+            except Exception as _swallowed:
+                log_swallowed("loop.decisions_inject", _swallowed)
+            # what earlier parts said that bears on this message, quoted —
+            # found once per message by code (the same text on every call of
+            # the run, so the cache keeps it); option memory.auto_recall
+            try:
+                from ..options import get as _opt
+                if _opt("memory.auto_recall") and getattr(session, "path", None):
+                    _key = (str(session.path), task)
+                    if getattr(self, "_auto_for", None) != _key:
+                        from ..chat_parts import auto_recall
+                        self._auto_for = _key
+                        self._auto_text = auto_recall(Path(session.path), task)
+                    if getattr(self, "_auto_text", ""):
+                        project_part.append({"role": "system", "content": self._auto_text})
+            except Exception as _swallowed:
+                log_swallowed("loop.auto_recall", _swallowed)
         # Skills: only the person's PINNED skills are listed every turn; the
         # skills for big work are picked with the person (_offer_skills) and
         # sent once, in full. Listing every skill each turn cost tokens and
@@ -2877,6 +3028,19 @@ class AgentLoop:
             # Per-call accounting retained for the last reply line
             self.last_usage = {"prompt": res.usage.get("prompt_tokens") or 0,
                                "completion": res.usage.get("completion_tokens") or 0}
+            # Per-task usage accumulates for the teams report.: off until 'aura
+            # setup teams' — no numbers move either.
+            try:
+                from .. import teams as _T_OFF
+                if _T_OFF.enabled():
+                    from .. import teams_usage as _UU
+                    _UU.record(getattr(self, "chat_id", "") or
+                           getattr(self, "session_id", "") or "chat",
+                           getattr(self, "model", "") or "",
+                           self.last_usage["prompt"],
+                           self.last_usage["completion"])
+            except Exception:                        # noqa: BLE001
+                pass
             # Cache telemetry (any provider shape) — measured, not assumed
             hit, miss = cache_usage_fields(res.usage)
             if hit or miss:
@@ -3157,6 +3321,20 @@ class AgentLoop:
         self._receipt_finalize(rec, model_claim=res.content or "")
         return rec, messages
 
+    def _take_urgent(self) -> None:
+        """The user's send-now message is taken: the stop that cut the step
+        short is cleared, so the next step reads the message and works on."""
+        self.urgent = False
+        _ev = getattr(self.llm, "cancel_event", None)
+        if _ev is not None:
+            _ev.clear()
+        try:
+            from ..sandbox_os import STOP, STOP_WHY
+            STOP.clear()
+            STOP_WHY["why"] = "task"
+        except Exception:                            # noqa: BLE001
+            pass
+
     def _run_tools(self, session, res, step: int) -> None:
         """Run this step's tool calls (reads in parallel), loop watch, failure
         streak, reviewer."""
@@ -3195,8 +3373,9 @@ class AgentLoop:
         if len(readonly) > 1:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=4) as pool:
-                futs = {pool.submit(self._execute_tool, tc["name"],
-                                    tc["parsed_arguments"],
+                import contextvars as _cv
+                futs = {pool.submit(_cv.copy_context().run, self._execute_tool,
+                                    tc["name"], tc["parsed_arguments"],
                                     tc.get("parse_error")): tc
                         for tc in readonly}
                 for fut, tc in futs.items():
@@ -3273,6 +3452,29 @@ class AgentLoop:
                               or result.get("error", ""))[:6000],
                 "truncated": bool(result.get("truncated")),
             })
+            # Work events are made by code at the tool hook — never by the
+            # model. Swallowed failures keep the loop running.: off until 'aura
+            # setup teams'.
+            try:
+                from .. import teams as _T_OFF
+                if not _T_OFF.enabled():
+                    _ev = None
+                else:
+                    from .. import teams_report as _RPT
+                    from .. import teams_run as _TR
+                    _ck = (getattr(self, "chat_id", "")
+                           or getattr(self, "session_id", ""))
+                    _pid = _TR.link_project_for(_ck)
+                    _ev = _RPT.from_tool_done(
+                        tc["name"], str(result.get("result", "")
+                                         or result.get("error", ""))[:6000],
+                        _pid, args=tc.get("parsed_arguments") or {},
+                        task=_TR.link_task_for(_ck),
+                        work_dir=str(getattr(self, "work_dir", "") or "") or None)
+                    if _ev is not None:
+                        _RPT.queue_report(_ev)
+            except Exception:                        # noqa: BLE001
+                pass
             content = result["result"] if result["status"] == "ok" \
                 else json.dumps(result)
             # Mentor turn — appended as its own system message so the model
@@ -3577,7 +3779,11 @@ class AgentLoop:
                 out.append(f"not proven: {self._unproven} result(s)")
             _ld = getattr(self, "_ladder", None)
             if _ld is not None:
-                out += [f"failed: {f}" for f in _ld.open_failures()[:4]]
+                # a step the user stopped (or cut short for a new message) is
+                # not a failure
+                from ..stopping import FOR_MESSAGE_TEXT, STOPPED_TEXT
+                out += [f"failed: {f}" for f in _ld.open_failures()[:4]
+                        if STOPPED_TEXT not in f and FOR_MESSAGE_TEXT[:40] not in f]
             _lw = getattr(self, "_loopwatch", None)
             if _lw is not None and _lw.blocked:
                 out.append(f"blocked: {len(_lw.blocked)} repeated call(s)")

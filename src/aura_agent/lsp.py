@@ -249,12 +249,42 @@ def errors_after_edit(path: str, root: Path, limit: int = 8) -> str:
     except Exception:                                    # noqa: BLE001
         return ""
     errs = [d for d in items if d.get("severity", 1) == 1]
+    # which errors this change brought: compared with the last check of this
+    # file (by message — line numbers move when lines are added). The first
+    # check of a file has nothing to compare with, so it says "in the file".
+    from collections import Counter
+    key = str(Path(root, path).resolve())
+    msgs = Counter(_msg(d) for d in errs)
+    old = _LAST.get(key)
+    _LAST[key] = msgs
     if not errs:
-        return ""
-    lines = [f"line {d['range']['start']['line'] + 1}: {str(d.get('message', '')).splitlines()[0][:160]}"
-             for d in errs[:limit]]
-    more = f" (+{len(errs) - limit} more)" if len(errs) > limit else ""
-    return f"language server: {len(errs)} error(s) in {path}{more} — " + "; ".join(lines)
+        return (f"language server: no errors left in {path} (this change fixed "
+                f"{sum(old.values())})") if old else ""
+    if old is None:
+        lines = [f"line {d['range']['start']['line'] + 1}: {_msg(d)}" for d in errs[:limit]]
+        more = f" (+{len(errs) - limit} more)" if len(errs) > limit else ""
+        return (f"language server: {len(errs)} error(s) in {path}{more} (some may be "
+                "older than this change) — " + "; ".join(lines))
+    fresh_left = msgs - old
+    new = []
+    for d in errs:
+        if fresh_left[_msg(d)] > 0:
+            fresh_left[_msg(d)] -= 1
+            new.append(d)
+    older = len(errs) - len(new)
+    if not new:
+        return f"language server: no new errors from this change ({older} older ones still in {path})"
+    lines = [f"line {d['range']['start']['line'] + 1}: {_msg(d)}" for d in new[:limit]]
+    more = f" (+{len(new) - limit} more)" if len(new) > limit else ""
+    return (f"language server: {len(new)} NEW error(s) from this change in {path}{more} — "
+            + "; ".join(lines) + (f" ({older} older ones still there)" if older else ""))
+
+
+_LAST: dict[str, object] = {}            # File → its errors at the last check
+
+
+def _msg(d: dict) -> str:
+    return str(d.get("message", "")).splitlines()[0][:160] if d.get("message") else ""
 
 
 def shutdown_all() -> None:

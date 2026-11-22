@@ -32,9 +32,9 @@ from dataclasses import dataclass, field
 from .tool_names import MCP_PREFIX
 
 # always sent (the prompt names todo_write and finding_add)
-CORE: tuple[str, ...] = ("read_file", "list_files", "search_files", "write_file",
-                         "edit_file", "run_command", "todo_write", "clarify",
-                         "finding_add", "tools_find")
+CORE: tuple[str, ...] = ("read_file", "list_files", "search_files", "locate",
+                         "write_file", "edit_file", "run_command", "todo_write",
+                         "clarify", "finding_add", "tools_find")
 
 
 @dataclass(frozen=True)
@@ -66,9 +66,15 @@ TOOLSETS: tuple[Toolset, ...] = (
              "daily update", "context size", "context window", "context limit",
              "context length", "your context", "the context", "model context",
              "context")),
-    Toolset("team", "Aura Teams: connect to your team's hub, wire any app, its token (you confirm)",
+    Toolset("team", "Aura Teams: your own team server or any hub — start, join, invite, wire any app (you confirm)",
             ("team_status", "team_connect", "team_token", "team_wiring_format",
-             "team_wire_check", "team_wire_use", "team_chat"),
+             "team_wire_check", "team_wire_use", "team_chat",
+             "team_hub_start",
+             "team_people", "team_revoke",
+             "team_rename_me", "team_hub_handover",
+             "team_hub_take", "team_address", "team_use",
+             "team_watch", "team_bind", "team_project", "team_members",
+             "team_merged", "team_task_new", "team_task_assign"),
             ("team", "teams", "teammate", "teammates", "hub", "the board", "our board",
              "vikunja", "jira", "linear", "github issues", "gitlab", "trello", "asana",
              "connect to", "connect me", "my team", "our team", "team chat", "chat with")),
@@ -105,6 +111,10 @@ TOOLSETS: tuple[Toolset, ...] = (
              "defined", "definition", "api", "refactor", "rename", "import",
              "imports", "signature", "codebase", "references", "used", "callers",
              "who calls", "where is")),
+    Toolset("notebooks", "Jupyter notebooks: change, add or remove a cell",
+            ("notebook_edit",),
+            ("notebook", "notebooks", "jupyter", "ipynb", ".ipynb", "cell", "cells",
+             "colab", "kernel")),
     Toolset("images", "look at an image file or a screenshot",
             ("view_image",),
             ("image", "images", "picture", "photo", "screenshot", "png", "jpg", "jpeg",
@@ -120,7 +130,7 @@ TOOLSETS: tuple[Toolset, ...] = (
              "investigate"),
             big_model=True),
     Toolset("memory", "remember facts and your preferences between chats",
-            ("memory_write", "memory_forget", "history_search"),
+            ("memory_write", "memory_forget", "history_search", "recall", "decisions"),
             ("remember", "always", "never", "prefer", "preference",
              "from now on", "next time", "in future", "don't forget",
              "last time", "earlier chat", "we decided", "previous",
@@ -290,6 +300,14 @@ def choose(task: str, registered: dict[str, dict], ctx: int = 0,
     on |= chat_on or set()
     off = (off | (chat_off or set())) - (chat_on or set())
     present = {set_of(n) for n in registered} - {"core"}
+    # Teams off until setup: the team toolset can't reach the model by ANY path
+    # below.
+    try:
+        from . import teams as _teams_flag
+        if not _teams_flag.enabled():
+            present.discard("team")
+    except Exception:                                # noqa: BLE001
+        present.discard("team")          # Can't know → stay off
     ch = Choice()
     if everything:
         for s in sorted(present):
@@ -336,8 +354,20 @@ class ToolList:
 
     def __init__(self, all_schemas: list[dict]):
         self.all: dict[str, dict] = {}
+        team_on = True
+        try:
+            from . import teams as _teams_flag
+            team_on = _teams_flag.enabled()
+        except Exception:                        # noqa: BLE001
+            team_on = False
         for sc in all_schemas:
-            self.all[sc["function"]["name"]] = sc
+            name = sc["function"]["name"]
+            # 's law is total: Teams off until setup — its tools are not
+            # sendable by ANY lane (choose, tools_find, tools on, add_tool),
+            # because they don't exist on this ToolList at all
+            if not team_on and set_of(name) == "team":
+                continue
+            self.all[name] = sc
         self.all.setdefault("tools_find", TOOLS_FIND_SCHEMA)
         self.all.setdefault("use_tool", USE_TOOL_SCHEMA)
         self.sent: list[str] = [n for n in CORE if n in self.all] + ["use_tool"]

@@ -40,8 +40,7 @@ def plan_on() -> bool:
 def _load(root: Path, chat: str = "", force: bool = False) -> list[dict]:
     """This chat's current plan: the LATEST record per id (the file is an
     append-only history — every status change appends a line), archived items
-    hidden, first-seen order kept. Empty while the plan switch is off (unless
-    forced: deep research's own plan). Public alias: load_items.
+    hidden, first-seen order kept. Public alias: load_items.
     """
     if not chat or not (force or plan_on()):
         return []
@@ -182,7 +181,6 @@ def register_todo(mediator, fs_dispatch: dict, root) -> None:
             return f"error: unknown action '{action}' (add|status|clear_done)"
         return render_checklist(_load(root, chat, force))
 
-    # Plan-safe: writing the plan is what plan mode is for
     mediator.register(ToolSpec("todo_write", BlastRadius.WRITE, lambda a: None), plan_safe=True)
     fs_dispatch["todo_write"] = todo_write
 

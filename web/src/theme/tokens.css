@@ -1,0 +1,229 @@
+
+/* ---------------------------------------------------------------- shared */
+:root {
+  --font: Inter, "Segoe UI Variable Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --display: "Inter Display", Inter, "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, Consolas, monospace;
+
+  /* corners — only these */
+  --r-ctl: 6px;      /* buttons, inputs, nav rows, menu items */
+  --r-chip: 7px;     /* chips */
+  --r-card: 10px;    /* cards, menus */
+  --r-big: 12px;     /* chat cards, image grids, bulk bar, poll, approval */
+  --r-panel: 14px;   /* sheet, panels, dialogs, composer */
+  --r-pal: 16px;     /* command palette */
+  --r-pill: 99px;    /* pills, avatars, labels */
+
+  /* movement — components use ONLY these */
+  --spring: linear(0, .006, .025 2.8%, .101 6.1%, .539 18.9%, .721 25.3%, .849 31.5%, .937 38.1%, .968 41.8%, .991 45.7%, 1.006 50.1%, 1.015 55%, 1.017 63.9%, 1.001 85.9%, 1);
+  --ease: cubic-bezier(.2, 0, 0, 1);
+  --t-fast: 150ms;    /* colour, opacity, hover */
+  --t-press: 200ms;   /* button press (with --spring) */
+  --t-card: 350ms;    /* card lift, menus (with --spring) */
+  --t-bar: 450ms;     /* bulk bar, dialog scale (with --spring) */
+  --t-panel: 500ms;   /* side panel slide (with --spring) */
+
+  /* sizes */
+  --row: 34px;        /* list rows (compact: 28px) */
+  --side-w: 232px;
+  --rooms-w: 240px;
+  --thread-w: 380px;
+  --task-panel-w: 560px;
+  --task-dialog-w: 760px;
+  --head-h: 52px;
+
+  /* fixed colours (same in every look) */
+  --ok: #4ADE80;       /* working, passed, done, online */
+  --ok-text: #4ADE80;  /* green AS TEXT — bright on dark */
+  --wait: #A78BFA;     /* waiting for a person */
+  --warn: #F59E0B;     /* stuck, clash, due today, in progress, away */
+  --err: #F87171;      /* error, failed, deleted lines */
+  --urgent: #F97316;   /* urgent priority square */
+  --offline: #71717A;  /* offline presence */
+  --violet-glow: #7C3AED;
+  --white: #FFFFFF;           /* picture "+N", PDF tag */
+  --av-ink: #111827;          /* initials on the avatar hues: every hue ≥ 6:1 (white was 1.9–2.8:1) */
+  --pdf: #EF4444;             /* PDF tag on file cards */
+  --doc-line: #CBD5E1; --doc-line-2: #E2E8F0;   /* the little page drawing on file cards */
+  --lb-text: #E5E7EB; --lb-icon: #D1D5DB; --lb-sub: #9CA3AF;   /* picture viewer (always dark) */
+
+  /* label + avatar palette (10 hues; avatars pick by hash of username) */
+  --hue-grey: #9CA3AF;
+  --hue-red: #F87171;
+  --hue-orange: #F97316;
+  --hue-amber: #F59E0B;
+  --hue-green: #34D399;
+  --hue-teal: #2DD4BF;
+  --hue-blue: #60A5FA;
+  --hue-indigo: #818CF8;
+  --hue-violet: #A78BFA;
+  --hue-pink: #F472B6;
+
+  --blur-lightbox: blur(8px);
+
+  /* layers */
+  --z-menu: 40; --z-task: 20; --z-bulk: 15; --z-lightbox: 60; --z-palette: 70; --z-toast: 80;
+}
+
+/* ------------------------------------------------------------- accents */
+/* each accent has a value for dark looks and one for Soft light */
+html[data-accent="teal"]   { --acc-dark: #2DD4BF; --acc-light: #0F766E; --on-acc-dark: #04211D; }
+html[data-accent="violet"] { --acc-dark: #8B7CF6; --acc-light: #6D28D9; --on-acc-dark: #120B2E; }
+html[data-accent="amber"]  { --acc-dark: #F5A524; --acc-light: #B45309; --on-acc-dark: #2A1700; }
+html[data-accent="blue"]   { --acc-dark: #5B8DEF; --acc-light: #2563EB; --on-acc-dark: #06142E; }
+:root { --acc-dark: #2DD4BF; --acc-light: #0F766E; --on-acc-dark: #04211D; --on-acc-light: #FFFFFF; }
+
+/* --------------------------------------------------------------- looks */
+/* Graphite — warm dark (default when no attribute is set) */
+:root, html[data-look="graphite"] {
+  --win: #121211; --sheet: #191918; --raised: #201F1E; --raised-2: #282725;
+  --hover: rgba(255,255,255,.05); --press: rgba(255,255,255,.08);
+  --line: rgba(255,255,255,.065); --line-2: rgba(255,255,255,.11);
+  --text: #EDECEA; --text-2: #B9B6B0;
+  --muted: #918E87;   /* 4.56:1 on chips */
+  --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 1px 2px rgba(0,0,0,.4);
+  --pop: 0 16px 48px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.07);
+  /* Graphite uses no glass. */
+  --glass: rgba(32,31,30,.92);  /* bulk bar */
+  --glass-panel: var(--sheet); --glass-menu: var(--raised-2);
+  --glass-composer: var(--raised); --glass-pal: var(--raised);
+  --blur: none;
+  --blur-bulk: none; --blur-task: none; --blur-menu: none; --blur-tools: none;
+  --blur-composer: none; --blur-pal: none;
+  --img-bg: #242321;
+  --acc: var(--acc-dark); --on-acc: var(--on-acc-dark);
+  color-scheme: dark;
+}
+/* Soft light */
+html[data-look="soft"] {
+  --win: #EFEEEA; --sheet: #FBFBF9; --raised: #FFFFFF; --raised-2: #F4F3F0;
+  --hover: rgba(0,0,0,.04); --press: rgba(0,0,0,.07);
+  --line: rgba(0,0,0,.06); --line-2: rgba(0,0,0,.1);
+  --text: #1D1C1A; --text-2: #4D4A45;
+  --muted: #6F6C64;
+  --ok-text: #15803D;  /* green AS TEXT — 5.0:1 on white (bright --ok fails) */
+  --shadow: 0 1px 2px rgba(30,25,15,.06), 0 1px 1px rgba(30,25,15,.04);
+  --pop: 0 18px 50px rgba(30,25,15,.16), 0 0 0 1px rgba(0,0,0,.06);
+  --glass: rgba(255,255,255,.82);
+  --glass-panel: var(--glass); --glass-menu: var(--glass);
+  --glass-composer: var(--glass); --glass-pal: var(--glass);
+  --blur: blur(18px) saturate(1.4);
+  --blur-bulk: blur(18px) saturate(1.5); --blur-task: blur(24px) saturate(1.5);
+  --blur-menu: blur(20px) saturate(1.5); --blur-tools: blur(16px);
+  --blur-composer: blur(20px) saturate(1.5); --blur-pal: blur(26px) saturate(1.6);
+  --img-bg: #ECEAE5;
+  --acc: var(--acc-light); --on-acc: var(--on-acc-light);
+  color-scheme: light;
+}
+/* Ink + glass */
+html[data-look="ink"] {
+  --win: #06070A; --sheet: rgba(17,19,25,.78); --raised: rgba(255,255,255,.045); --raised-2: rgba(255,255,255,.07);
+  --hover: rgba(255,255,255,.06); --press: rgba(255,255,255,.09);
+  --line: rgba(255,255,255,.07); --line-2: rgba(255,255,255,.12);
+  --text: #F1F3F8; --text-2: #B4BAC8; --muted: #848B9C;
+  --shadow: 0 0 0 1px rgba(255,255,255,.06) inset;
+  --pop: 0 24px 64px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.09);
+  --glass: rgba(24,27,36,.62);
+  --glass-panel: var(--glass); --glass-menu: var(--glass);
+  --glass-composer: var(--glass); --glass-pal: var(--glass);
+  --blur: blur(22px) saturate(1.6);
+  --blur-bulk: blur(18px) saturate(1.5); --blur-task: blur(24px) saturate(1.5);
+  --blur-menu: blur(20px) saturate(1.5); --blur-tools: blur(16px);
+  --blur-composer: blur(20px) saturate(1.5); --blur-pal: blur(26px) saturate(1.6);
+  --img-bg: #151821;
+  --acc: var(--acc-dark); --on-acc: var(--on-acc-dark);
+  color-scheme: dark;
+}
+
+/* ------------------------------------------------------ density, contrast */
+html[data-density="compact"] { --row: 28px; }
+
+/* "More contrast": no glass, stronger lines */
+html[data-contrast="more"] {
+  --glass: var(--raised); --glass-panel: var(--raised); --glass-menu: var(--raised);
+  --glass-composer: var(--raised); --glass-pal: var(--raised);
+  --blur: none;
+  --blur-bulk: none; --blur-task: none; --blur-menu: none; --blur-tools: none;
+  --blur-composer: none; --blur-pal: none;
+  --line: var(--line-2);
+  --hover: var(--press);
+}
+@media (prefers-contrast: more) {
+  html:not([data-contrast="normal"]) {
+    --glass: var(--raised); --glass-panel: var(--raised); --glass-menu: var(--raised);
+    --glass-composer: var(--raised); --glass-pal: var(--raised); --blur: none; --line: var(--line-2);
+    --blur-bulk: none; --blur-task: none; --blur-menu: none; --blur-tools: none;
+    --blur-composer: none; --blur-pal: none;
+  }
+}
+
+/* "Less motion": every duration becomes 1 ms, springs become plain */
+html[data-motion="reduced"] {
+  --t-fast: 1ms; --t-press: 1ms; --t-card: 1ms; --t-bar: 1ms; --t-panel: 1ms;
+  --spring: linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) {
+    --t-fast: 1ms; --t-press: 1ms; --t-card: 1ms; --t-bar: 1ms; --t-panel: 1ms;
+    --spring: linear;
+  }
+  html:not([data-motion="full"]) *, html:not([data-motion="full"]) *::before, html:not([data-motion="full"]) *::after {
+    animation-duration: 1ms !important; animation-iteration-count: 1 !important;
+  }
+}
+html[data-motion="reduced"] *, html[data-motion="reduced"] *::before, html[data-motion="reduced"] *::after {
+  animation-duration: 1ms !important; animation-iteration-count: 1 !important;
+}
+
+/* ---------------------------------------------------------------- page */
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--win);
+  color: var(--text);
+  font: 400 14px/1.5 var(--font);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+/* Ink + glass: two soft glows behind everything */
+html[data-look="ink"] body {
+  background:
+    radial-gradient(1200px 700px at 85% -10%, color-mix(in oklch, var(--acc) 22%, transparent), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, color-mix(in oklch, var(--violet-glow) 18%, transparent), transparent 60%),
+    var(--win);
+}
+.num { font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+/* ------------------------------------------------------ old names (keep) */
+/* They point at the new tokens so every page keeps working while it waits for its restyle
+ * (tickets. Remove a name only when grep finds no use of it.
+ */
+:root {
+  --bg: var(--sheet);
+  --accent: var(--acc);
+  --accent-text: var(--acc);
+  --accent-dim: color-mix(in oklch, var(--acc) 14%, transparent);
+  --on-accent: var(--on-acc);
+  --mark: var(--acc);
+  --ring: color-mix(in oklch, var(--acc) 50%, transparent);
+  --line-strong: var(--line-2);
+  --border: var(--line);
+  --surface: var(--raised);
+  --text-muted: var(--muted);
+  --ok-bg: color-mix(in oklch, var(--ok) 12%, transparent);
+  --err-bg: color-mix(in oklch, var(--err) 12%, transparent);
+  --green: var(--ok);
+  --red: var(--err);
+  --radius-control: var(--r-ctl);
+  --radius-card: var(--r-card);
+  --radius: var(--r-ctl);
+  --font-chat: var(--font);
+  --font-mono: var(--mono);
+  --motion: var(--t-fast) var(--ease);
+  --enter: var(--t-fast) var(--ease);
+  --exit: var(--t-fast) var(--ease);
+  --sp-2: 2px; --sp-4: 4px; --sp-6: 6px; --sp-8: 8px; --sp-10: 10px; --sp-12: 12px;
+  --sp-16: 16px; --sp-20: 20px; --sp-24: 24px;
+  --fs-14: 14px;
+  --z-dialog: 65;
+}

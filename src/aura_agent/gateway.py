@@ -14,7 +14,7 @@ Public: deliver_message(text, channel, **cfg) -> dict(ok, detail, where) aura
 gateway test — probe each configured channel aura gateway send <channel> <text>
 aura gateway status — which channels are configured (masked) Delivery failures
 are structured (ok=False, detail) — never raise to the operator; cron/loop
-callers treat failure as data (§ silence is a bug).
+callers treat failure as data (silence is a bug).
 """
 from __future__ import annotations
 

@@ -8,6 +8,11 @@ features, mode, ...); the last one wins, so /resume brings it back.
 Resume = rebuild the message list → continue. Crash-safe: every line is
 self-contained, partial trailing line is ignored on load.
 
+A long chat is a chain of parts (chat_parts.py): this file is the current
+part; finished parts sit unchanged in <name>.parts/ with their index. The
+model works from the current part only; history (restore, fork, search)
+reads the parts too.
+
 The whole chat stays in the jsonl. Opening a chat reads only the recent
 part: each compaction also writes <name>.view.json — the message list right
 after it, and where in the jsonl that point is — so a chat of weeks opens
@@ -143,6 +148,7 @@ class Session:
         # noticed by the file growing between our own writes
         self.other_writer = False
         self._size = None
+        self.part = 1                    # Which part of the chat this file is
         self._load()
 
     # ------------------------------------------------------------------ load
@@ -189,6 +195,9 @@ class Session:
             return
         if rec.get("record") == "flags":
             self.flags.update({k: bool(v) for k, v in (rec.get("flags") or {}).items()})
+            return
+        if rec.get("record") == "part":
+            self.part = int(rec.get("n") or 1)
             return
         msg = {k: v for k, v in rec.items()
                if k in _MSG_KEYS and v is not None}
@@ -416,8 +425,18 @@ class Session:
                 "seq": self.seq, **roles}
 
     # ------------------------------------------------- time travel ----
+    @property
+    def parts_dir(self) -> Path:
+        from .chat_parts import parts_dir
+        return parts_dir(self.path)
+
     def _records(self) -> list[dict]:
+        """Every record of the chat, oldest first: the finished parts, then
+        this file."""
         out = []
+        from .chat_parts import _read_jsonl, part_files
+        for f in part_files(self.path):
+            out += _read_jsonl(f)
         if not self.path.exists():
             return out
         for line in self.path.read_text(encoding="utf-8").splitlines():
@@ -488,6 +507,23 @@ class Session:
             shutil.copy2(self.path, snap)
         state = self.state_at_seq(seq)
         self.drop_view()                    # The file is rewritten.
+        head = [r for r in records if r.get("seq")]
+        from .chat_parts import part_files
+        if part_files(self.path):
+            first_here = 0
+            for line in (self.path.read_text(encoding="utf-8").splitlines()
+                         if self.path.exists() else []):
+                try:
+                    first_here = int(json.loads(line).get("seq") or 0)
+                    break
+                except (ValueError, AttributeError):
+                    continue
+            if seq < first_here:
+                # back into an earlier part: the chat becomes one file up to
+                # there; the parts (and their index) are kept with the snapshot
+                shutil.move(str(self.parts_dir), str(snap.with_suffix(".parts")))
+                self.part = 1
+        del head
         with self.path.open("w", encoding="utf-8") as f:
             for rec in records:
                 if rec.get("seq", 0) > seq:
@@ -501,6 +537,44 @@ class Session:
         self.compacts = state["compacts"]
         self.settings = state["settings"]
         return str(snap)
+
+    def roll_part(self, keep: list[dict]) -> dict | None:
+        """This part is full: move it into the parts folder unchanged and start
+        the next one with the chat's own records, the code-made start note and
+        `keep` (the last exchange, word for word). Returns the finished part's
+        master entry, or None when there is nothing to roll."""
+        if self._held is not None or not self.path.exists():
+            return None
+        from . import chat_parts as CP
+        info = CP.roll(self.path)
+        self.drop_view()
+        self._size = None
+        now = round(time.time(), 3)
+        lines = []
+        for rec in (({"record": "meta", **self.meta} if self.meta else None),
+                    ({"record": "title", "title": self.title} if self.title else None),
+                    ({"record": "settings", "settings": self.settings} if self.settings else None),
+                    ({"record": "flags", "flags": self.flags} if self.flags else None),
+                    {"record": "part", "n": info["part"] + 1, "prev": info["file"].name}):
+            if rec is None:
+                continue
+            self.seq += 1
+            lines.append({"seq": self.seq, "ts": now, **rec})
+        for ln in lines:
+            self._write(json.dumps(ln, ensure_ascii=False) + "\n")
+        self.part = info["part"] + 1
+        system = [m for m in self.messages if m.get("role") == "system"]
+        self.messages = list(system)
+        self.note(CP.start_note(self.path, info["part"]))
+        for m in keep:
+            kw = {k: v for k, v in m.items() if k in _MSG_KEYS and k != "role" and v is not None}
+            self.seq += 1
+            rec = {"seq": self.seq, "ts": m.get("ts") or now, "role": m["role"],
+                   "carried": True, **kw}
+            self._write(json.dumps(rec, ensure_ascii=False) + "\n")
+            self.messages.append({k: v for k, v in rec.items() if k in _MSG_KEYS})
+        self.compacts = []
+        return info["master"]
 
     def fork(self, seq: int, sessions_dir: Path | None = None,
              label: str = "fork") -> "Session":

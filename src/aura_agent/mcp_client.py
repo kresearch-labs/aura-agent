@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 
 from . import __version__
@@ -153,7 +154,13 @@ class MCPServer:
 
         t = threading.Thread(target=reader, daemon=True)
         t.start()
-        t.join(timeout)
+        # wait in short slices so the user's stop ends the wait at once
+        from .sandbox_os import stop_requested
+        end = time.monotonic() + timeout
+        while t.is_alive() and time.monotonic() < end:
+            t.join(0.2)
+            if stop_requested() and t.is_alive():
+                raise MCPError(f"mcp '{self.name}': stopped — the user stopped the task")
         if t.is_alive():
             raise MCPError(f"mcp '{self.name}': response timeout "
                            f"({timeout}s) on '{self.name}'")

@@ -220,14 +220,33 @@ def _head(s, text: str, extra: str = "") -> str:
     return s("heading", text.upper(), bold=True) + (s("faint", "  " + extra) if extra else "")
 
 
+_collide_cache: dict = {}
+
+
+def _collide_cached(own: dict, link: dict, ttl: float = 30.0) -> dict:
+    """teams_collide.collisions with a 30-s cache — sidebar paints are
+    frequent and the git probes are not free."""
+    import time as _t
+    key = (tuple(sorted(link.get("files", []))), own.get("url", ""))
+    ent = _collide_cache.get(key)
+    now = _t.time()
+    if ent and now - ent[0] < ttl:
+        return ent[1]
+    try:
+        from .. import teams_collide as _C
+        r = _C.collisions(own, None, link.get("files", []) or [], task=None)
+    except Exception:                                # noqa: BLE001
+        r = {"hits": []}
+    _collide_cache[key] = (now, r)
+    return r
+
+
 def _row(s, label: str, value: str, width: int, role: str = "text") -> list[str]:
     return _hang(s, s("faint", pad(label, 10)), role, value, width, 10)
 
 
 def sidebar_lines(app, width: int, height: int) -> list[str]:
-    """What's going on, always in view (fullscreen): the switches, the plan while
-    a step is open, the team.
-    """
+    """What's going on, always in view (fullscreen)."""
     s = app.s
     out: list[str] = []
     # The model, context, tokens, how often Aura asks, the project and the
@@ -253,7 +272,6 @@ def sidebar_lines(app, width: int, height: int) -> list[str]:
         out += _row(s, "history", hist, width, "dim")
     out.append("")
     out += _persona(app, width)
-    # the plan — only while a step is open (a finished plan is noise)
     items = []
     try:
         app._plan_lines()                       # Refreshes the cache (1.5 s)
@@ -345,6 +363,12 @@ def _team(app, width: int) -> list[str]:
     from ..editions import teams_present
     if not teams_present():
         return []
+    try:
+        from .. import teams as _teams_flag
+        if not _teams_flag.enabled():
+            return []                    # Teams isn't set up yet
+    except Exception:                                # noqa: BLE001
+        return []
     from ..teams_ui import snapshot
     s = app.s
     try:
@@ -360,6 +384,56 @@ def _team(app, width: int) -> list[str]:
     online = d.get("online")
     state = ("…" if online is None else "● online" if online else "○ offline")
     out = [_head(s, "team", state)]
+    # Our own team server: the address and who you are
+    own = None
+    try:
+        from .. import teams as _teams     # NOT ".teams" — aura_agent.tui has
+        own = _teams.load_config().get("aura_team")   # No teams module (the
+    except Exception:                                # noqa: BLE001
+        own = None                                   # Old import always threw)
+    if own:
+        out += _row(s, "team", own.get("team", "?"), width)
+        out += _row(s, "you", f"{own.get('person', '?')} ({own.get('role', '?')})", width)
+        out += _row(s, "hub", own.get("lan") or own.get("url", "?"), width, "faint")
+        try:
+            from .. import teams_server as TS
+            alive = TS.probe(own.get("port")) if hasattr(TS, "probe") else {}
+            if not alive.get("ok"):
+                out.append(s("faint", "  team hub not reachable — it starts with this machine's Aura"))
+        except Exception:                            # noqa: BLE001
+            pass
+        # How many report events are queued waiting for the hub 's sidebar
+        # line: this chat's linked task
+        try:
+            from .. import teams_run as _TR
+            key2 = app.ctx.session.path.stem
+            link = _TR._load().get(key2) or {}
+            if link.get("task_id"):
+                out += _row(s, "task",
+                            f"#{link['task_id']} {link.get('title', '')}",
+                            width)
+            if own and link.get("files"):
+                cn = _collide_cached(own, link)
+                if cn.get("hits"):
+                    vs = sorted({h.get("who", "?") for h in cn["hits"]})
+                    who_str = "/".join(vs)[:18]
+                    out.append(s("faint", f"  ⚠ collision with {who_str} "
+                                          f"({len(cn['hits'])} overlapping "
+                                          f"file{'s' if len(cn['hits']) != 1 else ''})"))
+        except Exception:                            # noqa: BLE001
+            pass
+        try:
+            from .. import teams_queue as _Q
+            items = _Q.queue_items() if hasattr(_Q, "queue_items") else []
+            n = len([e for e in items if e.get("kind") == "report"])
+            if n:
+                out.append(s("faint", f"  {n} report{'s' if n != 1 else ''} waiting to send"))
+        except Exception:                            # noqa: BLE001
+            pass
+        out += [s("faint", ln) for ln in _wrap(
+            "add people at the hub's Administration › Users", width)]
+        out.append("")
+        return out
     out += _row(s, "you", d.get("user") or "?", width)
     link = d.get("link") or {}
     if link.get("task"):

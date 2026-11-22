@@ -109,6 +109,8 @@ def _opener(allow):
 
 def fetch(url: str, timeout: float = 15.0, allow=None) -> dict:
     """One GET. Returns {url, status, content_type, title, text, links}."""
+    from ..stopping import progress
+    progress(f"reading {url}")
     req = urllib.request.Request(url, headers={"User-Agent": UA,
                                                "Accept": "text/html,text/plain,"
                                                          "application/json,*/*;q=0.5",
@@ -120,7 +122,8 @@ def fetch(url: str, timeout: float = 15.0, allow=None) -> dict:
             enc = (r.headers.get("Content-Encoding") or "").lower()
             limit = MAX_PDF_BYTES if ("pdf" in ctype.lower()
                                       or final.lower().split("?")[0].endswith(".pdf")) else MAX_BYTES
-            raw = r.read(limit)
+            from ..stopping import read_body
+            raw = read_body(r, limit)            # A user's stop ends a slow download
             status = r.status
     except urllib.error.HTTPError as e:
         return {"url": url, "status": e.code, "content_type": "",

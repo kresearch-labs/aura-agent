@@ -18,6 +18,10 @@
 #     --add-host=host.docker.internal:host-gateway).
 #   - runs as a normal user (uid 1000), not root.
 #
+# The Teams hub's page is built, not kept in git: build it first (in web/:
+# pnpm install, then pnpm build) or the image's hub answers "the team page
+# isn't built here". The release builds it before the image.
+#
 # Add-ons are the user's choice (none by default): --build-arg EXTRAS=vault,web adds
 # the key vault and the browser tool; its Chromium
 # is downloaded at build time then (about 150 MB more).
