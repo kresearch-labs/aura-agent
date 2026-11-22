@@ -14,7 +14,7 @@
 [![SWE-bench Verified](https://img.shields.io/badge/SWE--bench%20Verified-89.0%25-3fb950?style=for-the-badge)](#-proof-not-promises)
 [![Paper DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24145734.svg)](https://doi.org/10.5281/zenodo.24145734)
 
-[**Quick start**](#-quick-start) · [**Why Aura**](#-why-aura) · [**What it can do**](#-what-it-can-do) · [**Guide**](docs/simple/GUIDE.md) · [**Persona**](https://github.com/kresearch-labs/Persona) · [**Paper**](https://doi.org/10.5281/zenodo.24145734)
+[**Quick start**](#-quick-start) · [**Why Aura**](#-why-aura) · [**What it can do**](#-what-it-can-do) · [**Teams**](#-aura-teams) · [**Guide**](docs/simple/GUIDE.md) · [**Persona**](https://github.com/kresearch-labs/Persona) · [**Paper**](https://doi.org/10.5281/zenodo.24145734)
 
 <br>
 
@@ -126,6 +126,22 @@ Profiles keep their own models, keys, settings and projects apart. Every chat re
 </td>
 </tr>
 </table>
+
+## 👥 Aura Teams
+
+**Work with other people on one project — each person with their own Aura.**
+
+<img src="assets/teams-board.png" alt="The Aura Teams board: tasks in columns, each card showing who has it and what their Aura is doing now" width="840">
+
+One computer on your network hosts the team's hub; everyone opens it in a browser. No cloud account, no outside server.
+
+- **Name a task, Aura does the rest.** Say *"#3 fix the login"* — Aura works on its own branch, tells the hub which files it touched and whether the tests passed, and marks the task done when it's finished.
+- **Everyone's work, live.** The board shows what each person's Aura is doing right now; Flow puts everyone's work on one timeline; when two Auras touch the same file, both see it before it becomes a conflict.
+- **Chat built in.** Rooms per project and direct messages, with pictures and files.
+- **You decide who sees what.** Roles per project, and switches per person — turn off Chat or Tree for one person in one project only.
+- **Only work facts are shared.** File names, test results and finished tasks reach the hub. Your chat with Aura, your code and your secrets stay on your computer.
+
+**Start it:** tell Aura *"set up Teams"*. Details in the [Guide](docs/simple/GUIDE.md#-aura-teams).
 
 ## 📊 Proof, not promises
 

@@ -66,7 +66,7 @@ TOOLSETS: tuple[Toolset, ...] = (
              "daily update", "context size", "context window", "context limit",
              "context length", "your context", "the context", "model context",
              "context")),
-    Toolset("team", "Aura Teams: your own team server or any hub — start, join, invite, wire any app (you confirm)",
+    Toolset("team", "Aura Teams — part of Aura: work together on one project (a shared board, chat and live view); start a team hub here or join one, then tasks, people and projects (you confirm)",
             ("team_status", "team_connect", "team_token", "team_wiring_format",
              "team_wire_check", "team_wire_use", "team_chat",
              "team_hub_start",
@@ -74,8 +74,10 @@ TOOLSETS: tuple[Toolset, ...] = (
              "team_rename_me", "team_hub_handover",
              "team_hub_take", "team_address", "team_use",
              "team_watch", "team_bind", "team_project", "team_members",
-             "team_merged", "team_task_new", "team_task_assign"),
+             "team_merged", "team_task_new", "team_task_assign", "team_reports",
+             "team_my_tasks"),
             ("team", "teams", "teammate", "teammates", "hub", "the board", "our board",
+             "colleague", "colleagues", "coworker", "coworkers", "together", "collaborate",
              "vikunja", "jira", "linear", "github issues", "gitlab", "trello", "asana",
              "connect to", "connect me", "my team", "our team", "team chat", "chat with")),
     Toolset("persona", "Persona: plan and train new pblocks with you (you approve each)",
@@ -300,14 +302,8 @@ def choose(task: str, registered: dict[str, dict], ctx: int = 0,
     on |= chat_on or set()
     off = (off | (chat_off or set())) - (chat_on or set())
     present = {set_of(n) for n in registered} - {"core"}
-    # Teams off until setup: the team toolset can't reach the model by ANY path
-    # below.
-    try:
-        from . import teams as _teams_flag
-        if not _teams_flag.enabled():
-            present.discard("team")
-    except Exception:                                # noqa: BLE001
-        present.discard("team")          # Can't know → stay off
+    # Teams is part of Aura even before it is set up: the group stays, and
+    # ToolList holds back everything but the way in (TEAM_WAY_IN) until then
     ch = Choice()
     if everything:
         for s in sorted(present):
@@ -348,24 +344,33 @@ def choose(task: str, registered: dict[str, dict], ctx: int = 0,
     return ch
 
 
+# Before Teams is set up the model has only the way in: where things stand,
+# make this computer the hub, join a hub
+TEAM_WAY_IN = ("team_status", "team_hub_start", "team_connect")
+
+
+def _teams_on() -> bool:
+    try:
+        from . import teams as _teams_flag
+        return bool(_teams_flag.enabled())
+    except Exception:                            # noqa: BLE001
+        return False                             # Can't know → only the way in
+
+
 class ToolList:
     """The schemas sent to the model: core + chosen sets, in a stable
     order, growing at the end only."""
 
     def __init__(self, all_schemas: list[dict]):
         self.all: dict[str, dict] = {}
-        team_on = True
-        try:
-            from . import teams as _teams_flag
-            team_on = _teams_flag.enabled()
-        except Exception:                        # noqa: BLE001
-            team_on = False
+        # the team tools past the way in wait here until Teams is set up; no
+        # lane (choose, tools_find, tools on, add_tool) can send them before
+        self.team_later: dict[str, dict] = {}
+        team_on = _teams_on()
         for sc in all_schemas:
             name = sc["function"]["name"]
-            # 's law is total: Teams off until setup — its tools are not
-            # sendable by ANY lane (choose, tools_find, tools on, add_tool),
-            # because they don't exist on this ToolList at all
-            if not team_on and set_of(name) == "team":
+            if not team_on and set_of(name) == "team" and name not in TEAM_WAY_IN:
+                self.team_later[name] = sc
                 continue
             self.all[name] = sc
         self.all.setdefault("tools_find", TOOLS_FIND_SCHEMA)
@@ -424,7 +429,19 @@ class ToolList:
         _on, off, _all = user_switches()
         return s in self.chat_off or (s in off and s not in _on)
 
+    def team_ready(self) -> bool:
+        """Teams was set up during this chat: its other tools join now."""
+        if self.team_later and _teams_on():
+            self.all.update(self.team_later)
+            self.team_later = {}
+            if any(set_of(n) == "team" for n in self.sent + self.waiting):
+                self._grow([n for n in self.all if set_of(n) == "team"])
+            return True
+        return False
+
     def add_set(self, set_name: str, why: str) -> list[str]:
+        if set_name == "team":
+            self.team_ready()
         new = self._grow([n for n in self.all if set_of(n) == set_name])
         if new:
             self.why.setdefault(set_name, why)
@@ -434,6 +451,8 @@ class ToolList:
 
     def mark_used(self, name: str) -> None:
         s = set_of(name)
+        if s == "team":
+            self.team_ready()            # A way-in tool may have just set Teams up
         self.used.add(name if s == "other" else s)
 
     def kept_by_user(self, set_name: str) -> bool:

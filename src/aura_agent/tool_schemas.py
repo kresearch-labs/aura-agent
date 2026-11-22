@@ -767,13 +767,14 @@ SCHEMAS["aura_update"] = {"type": "function", "function": {
 # Aura Teams by asking
 SCHEMAS["team_status"] = {"type": "function", "function": {
     "name": "team_status",
-    "description": ("Aura Teams: is this Aura connected to a team hub, which app, the "
-                    "token, and what is still to do."),
+    "description": ("Aura Teams — part of Aura: a shared board, chat and live view of "
+                    "everyone's Aura work for people working together. Says where this "
+                    "Aura stands: set up or not, which hub, and what is still to do."),
     "parameters": {"type": "object", "properties": {}}}}
 SCHEMAS["team_connect"] = {"type": "function", "function": {
     "name": "team_connect",
-    "description": ("Connect to a team hub — only when the USER gave its address in their "
-                    "own message. The user confirms. Then follow what it says."),
+    "description": ("Aura Teams: join a team's hub — only when the USER gave its address "
+                    "in their own message. The user confirms. Then follow what it says."),
     "parameters": {"type": "object", "properties": {
         "address": {"type": "string", "description": "the hub's address, as the user gave it"},
         "name": {"type": "string", "description": "the user's name on the team (ask if unknown)"}},
@@ -945,6 +946,8 @@ MAIN_AGENT_TOOLS: list[str] = ['delegate',
  'team_merged',
  'team_task_new',
  'team_task_assign',
+ 'team_reports',
+ 'team_my_tasks',
  'team_hub_handover',
  'team_hub_take',
  'team_address',
@@ -954,6 +957,108 @@ MAIN_AGENT_TOOLS: list[str] = ['delegate',
 from .editions import teams_present as _teams_present  # noqa: E402
 if not _teams_present():                    # Shipped without Aura Teams: no team tools offered
     MAIN_AGENT_TOOLS = [t for t in MAIN_AGENT_TOOLS if not t.startswith("team_")]
+
+
+
+# Aura Teams: the rest of the team tools (they arrive once Teams is set up,
+# except team_hub_start, which is a way in)
+SCHEMAS["team_hub_start"] = {"type": "function", "function": {
+    "name": "team_hub_start",
+    "description": ("Aura Teams: make THIS computer the team's hub — the shared board, chat and live view of everyone's Aura work, opened in a browser by the team on your network. Use it when the user wants to start a team here. The user confirms on a card; you are its owner and add people on the hub page."),
+    "parameters": {"type": "object", "properties": {'name': {'type': 'string', 'description': "the user's name on the team: lowercase letters, digits and dashes (ask them if you don't know it)"}, 'team_name': {'type': 'string', 'description': "the team's name, if the user gave one"}}}}}
+SCHEMAS["team_people"] = {"type": "function", "function": {
+    "name": "team_people",
+    "description": ('Aura Teams: the people on your team and their team roles.'),
+    "parameters": {"type": "object", "properties": {}}}}
+SCHEMAS["team_revoke"] = {"type": "function", "function": {
+    "name": "team_revoke",
+    "description": ('Aura Teams: stop one device (an Aura) from working with the hub. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'device': {'type': 'string', 'description': "the device id, from the hub's list"}}, "required": ['device']}}}
+SCHEMAS["team_rename_me"] = {"type": "function", "function": {
+    "name": "team_rename_me",
+    "description": ("Aura Teams: change your own name on the team (it is also your work branch's name). The user confirms."),
+    "parameters": {"type": "object", "properties": {'new_name': {'type': 'string', 'description': 'the new name: lowercase letters, digits and dashes'}}, "required": ['new_name']}}}
+SCHEMAS["team_use"] = {"type": "function", "function": {
+    "name": "team_use",
+    "description": ('Aura Teams: switch which saved team this Aura works with. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'team': {'type': 'string', 'description': "the team's name"}}, "required": ['team']}}}
+SCHEMAS["team_notices"] = {"type": "function", "function": {
+    "name": "team_notices",
+    "description": ("Aura Teams: send a project's team events (task done, merged, collisions) to an outside chat channel or webhook. The user confirms; the address goes in a hidden box."),
+    "parameters": {"type": "object", "properties": {'project': {'type': 'string', 'description': "the project's short name"}, 'app': {'type': 'string', 'description': 'slack, discord, teams, telegram or webhook'}, 'types': {'type': 'array', 'items': {'type': 'string'}, 'description': 'which events; empty = all'}}, "required": ['project']}}}
+SCHEMAS["team_map"] = {"type": "function", "function": {
+    "name": "team_map",
+    "description": ("Aura Teams: read the team's shared map — who works on which files now, and clashes — for the project this chat is linked to."),
+    "parameters": {"type": "object", "properties": {'query': {'type': 'string', 'description': 'a file, folder or person to look for; empty = the whole map'}}}}}
+SCHEMAS["team_import_vikunja"] = {"type": "function", "function": {
+    "name": "team_import_vikunja",
+    "description": ('Aura Teams: bring a Vikunja export (zip) into the team hub. Shows a dry run first; the user confirms the real one.'),
+    "parameters": {"type": "object", "properties": {'zip': {'type': 'string', 'description': "the export zip's path"}, 'do_it': {'type': 'boolean', 'description': 'false = dry run (default)'}}, "required": ['zip']}}}
+SCHEMAS["team_wire_fix"] = {"type": "function", "function": {
+    "name": "team_wire_fix",
+    "description": ("Aura Teams: a wired outside app's operation keeps failing — re-check it, show the difference and fix the wiring on the user's yes."),
+    "parameters": {"type": "object", "properties": {'operation': {'type': 'string', 'description': "the failing operation's name"}, 'wiring': {'type': 'object', 'description': 'the corrected wiring, if you have one'}}, "required": ['operation']}}}
+SCHEMAS["team_watch"] = {"type": "function", "function": {
+    "name": "team_watch",
+    "description": ('Aura Teams: what the team did today across the projects you can see — tasks started, finished, merged, clashes.'),
+    "parameters": {"type": "object", "properties": {}}}}
+SCHEMAS["team_bind"] = {"type": "function", "function": {
+    "name": "team_bind",
+    "description": ('Aura Teams: link a team project to the code folder this chat works in, so work here is reported to that project. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'project': {'type': 'string', 'description': "the project's short name"}}, "required": ['project']}}}
+SCHEMAS["team_project"] = {"type": "function", "function": {
+    "name": "team_project",
+    "description": ('Aura Teams: make a new project on the team hub. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'name': {'type': 'string', 'description': "the project's name"}}, "required": ['name']}}}
+SCHEMAS["team_members"] = {"type": "function", "function": {
+    "name": "team_members",
+    "description": ('Aura Teams: add a person to a project with a role (Reader, Member or Project admin). The user confirms.'),
+    "parameters": {"type": "object", "properties": {'project': {'type': 'string', 'description': "the project's short name"}, 'person': {'type': 'string', 'description': "the person's team name"}, 'role': {'type': 'string', 'description': 'Reader, Member or Project admin (default Member)'}}, "required": ['project', 'person']}}}
+SCHEMAS["team_merged"] = {"type": "function", "function": {
+    "name": "team_merged",
+    "description": ("Aura Teams: mark a task's work as merged (or not), which clears its clash warnings. The user confirms."),
+    "parameters": {"type": "object", "properties": {'task': {'type': 'string', 'description': 'the task number, like #12'}, 'merged': {'type': 'boolean', 'description': 'true = merged (default)'}}, "required": ['task']}}}
+SCHEMAS["team_task_new"] = {"type": "function", "function": {
+    "name": "team_task_new",
+    "description": ("Aura Teams: add a task to a project's board, optionally for a person. The user confirms."),
+    "parameters": {"type": "object", "properties": {'project': {'type': 'string', 'description': "the project's short name"}, 'title': {'type': 'string', 'description': "the task's title"}, 'for': {'type': 'string', 'description': "the person's team name, if it is for someone"}}, "required": ['project', 'title']}}}
+SCHEMAS["team_task_assign"] = {"type": "function", "function": {
+    "name": "team_task_assign",
+    "description": ('Aura Teams: give an existing task to a person. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'task': {'type': 'string', 'description': 'the task number, like #12'}, 'person': {'type': 'string', 'description': "the person's team name"}}, "required": ['task', 'person']}}}
+SCHEMAS["team_hub_handover"] = {"type": "function", "function": {
+    "name": "team_hub_handover",
+    "description": ("Aura Teams: move the team's hub to another person's computer — seals everything for their device. Owner only; the user confirms."),
+    "parameters": {"type": "object", "properties": {'device': {'type': 'string', 'description': "the receiving device's id"}}, "required": ['device']}}}
+SCHEMAS["team_hub_take"] = {"type": "function", "function": {
+    "name": "team_hub_take",
+    "description": ('Aura Teams: the receiving side of a hub move — open the sealed bundle here and start the hub. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'bundle': {'type': 'string', 'description': "the bundle file's path"}}, "required": ['bundle']}}}
+SCHEMAS["team_my_tasks"] = {"type": "function", "function": {
+    "name": "team_my_tasks",
+    "description": ("Aura Teams: the user's own open tasks on the team board — "
+                    "which are blocked and what is due. Use it when they ask what "
+                    "their team tasks are."),
+    "parameters": {"type": "object", "properties": {}}}}
+SCHEMAS["team_reports"] = {"type": "function", "function": {
+    "name": "team_reports",
+    "description": ("Aura Teams: turn this Aura's work reports to the hub off or on — "
+                    "when the user asks. Off stops all sharing at once; on asks the "
+                    "user first."),
+    "parameters": {"type": "object", "properties": {
+        "on": {"type": "boolean", "description": "true = share again, false = stop"}},
+        "required": ["on"]}}}
+SCHEMAS["team_address"] = {"type": "function", "function": {
+    "name": "team_address",
+    "description": ('Aura Teams: the hub moved — check its signed address notice and save the new address. The user confirms.'),
+    "parameters": {"type": "object", "properties": {'notice': {'type': 'string', 'description': 'the address notice, as received'}}, "required": ['notice']}}}
+
+
+# every team tool says it belongs to Aura Teams (the model ties them together)
+for _n, _sc in SCHEMAS.items():
+    _fn = _sc["function"]
+    if _n.startswith("team_") and not _fn["description"].startswith("Aura Teams"):
+        _fn["description"] = "Aura Teams: " + _fn["description"]
 
 
 def schema_for(name: str) -> dict:

@@ -4,7 +4,7 @@
 
 **Everything in detail.** The short version is in the [README](../../README.md).
 
-[📦 Install](#-install-in-detail) · [🗂️ Your work](#%EF%B8%8F-how-aura-keeps-your-work) · [🌐 Services](#-services-aura-can-contact) · [🛡️ Trust](#%EF%B8%8F-trust-architecture) · [🤖 On its own](#-running-on-its-own) · [📊 Measuring](#-measuring) · [🎛️ Switches](#%EF%B8%8F-feature-switches) · [🧩 Ecosystem](#-ecosystem)
+[📦 Install](#-install-in-detail) · [🗂️ Your work](#%EF%B8%8F-how-aura-keeps-your-work) · [🌐 Services](#-services-aura-can-contact) · [🛡️ Trust](#%EF%B8%8F-trust-architecture) · [🤖 On its own](#-running-on-its-own) · [📊 Measuring](#-measuring) · [🎛️ Switches](#%EF%B8%8F-feature-switches) · [👥 Teams](#-aura-teams) · [🧩 Ecosystem](#-ecosystem)
 
 </div>
 
@@ -248,6 +248,66 @@ The run waits, and what runs is checked to be exactly what you approved.
 
 > [!IMPORTANT]
 > **Safety — approvals, skill-pack limits, protected files, scope and your hooks — is never a switch.**
+
+---
+
+## 👥 Aura Teams
+
+**Several people, one project, each with their own Aura** — joined through a hub on your own network. 🏠 No cloud account, no outside server.
+
+> 💡 Teams is part of Aura but stays **off** until you set it up. Until then Aura only offers to set it up.
+
+### 🚀 Start in three steps
+
+| | Who | What to do |
+|---|---|---|
+| 1️⃣ | the person who hosts it | Tell Aura **"set up Teams"** → *host the hub here* → your name and a password |
+| 2️⃣ | the owner | Hub page → **Admin › Users** → add each person → send them the message the page gives you → add them to a project |
+| 3️⃣ | each teammate | Sign in on the hub page, choose a password, then tell Aura **"connect me to my team at ‹address›"** |
+
+> 🔒 The browser warns about the hub's certificate the first time — expected: the hub makes its own and Aura pins it.
+
+### 🛠️ Work on a task
+
+Say **"#3 fix the login"** and Aura:
+
+- 🌿 works on a branch with your name
+- 📄 tells the hub which files it touched and whether tests passed
+- ⚠️ warns you when someone else's Aura works in the same files
+- ✅ commits, pushes and marks the task done when it's finished
+
+> 🛡️ Only work facts reach the hub — file names, test results, decisions, commits. Your chat, code and secrets stay on your computer.
+
+### 🗺️ The hub's pages
+
+| Page | Shows |
+|---|---|
+| 🏠 **Now** | your tasks and the team's latest work |
+| 📋 **Board** | tasks in columns; each card shows what that person's Aura is doing |
+| 🌳 **Tree** | the files, and who is working in which |
+| 📈 **Flow** | everyone's work on one timeline, waits and clashes |
+| 📜 **History** | every change, tamper-evident |
+| 💬 **Chat** | project rooms and direct messages, with pictures and files |
+| ⚙️ **Admin** | Users · Access · Projects · Roles · Hub |
+
+### 🔑 Who sees what
+
+- 🎭 **Roles per project:** Reader, Member, Project admin — or your own; all editable.
+- 🎚️ **Admin › Access:** pick a person, then a project → change their role there, or switch off one area (say Tree) for them in that project only. The hub enforces it.
+
+### 🗣️ Just ask Aura
+
+*"what are my team tasks?"* · *"turn the team reports off"* · *"connect me to my team at ‹address›"*
+
+### 🛡️ Safe by design
+
+🔐 HTTPS with a pinned certificate · 🧂 scrypt passwords · 🚫 20 wrong tries lock that name from the guessing address · 👀 people see only their own projects
+
+### 📦 Move the hub
+
+The owner can move the hub to another computer — sealed for the receiver's device; teammates' Auras check the hub's signed new address before using it.
+
+<p align="center"><sub>📄 Every detail in <a href="../GUIDE.md#aura-teams">the original text</a></sub></p>
 
 ---
 

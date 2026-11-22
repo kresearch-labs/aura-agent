@@ -81,6 +81,12 @@ def register(mediator: Mediator, dispatch: dict) -> None:
 
     def team_status(args) -> str:
         cfg = teams.load_config()
+        if not teams.enabled() and not _own_cfg():
+            return ("Aura Teams is part of you but isn't set up on this computer yet. "
+                    "Two ways in: team_hub_start makes this computer the team's hub "
+                    "(the user owns it and adds people on its page); team_connect "
+                    "joins a team's hub at the address the user gives. Ask which "
+                    "one if it isn't clear.")
         if not cfg.get("hub_url"):
             return ("not connected to a team hub. When the user asks to connect, call "
                     "team_connect with the address they gave.")
@@ -379,11 +385,53 @@ def register(mediator: Mediator, dispatch: dict) -> None:
         return (f"this chat works with '{matches[0]['team']}' now — its "
                 "projects, board and chat follow")
 
+    def _set_up_here(args) -> str:
+        """Teams isn't set up yet. The model never sees the password."""
+        from .. import setup_steps as SS
+        owner = str(args.get("name") or "").strip() or teams.my_name()
+        if not owner:
+            return ("error: the user's name on the team (lowercase letters, "
+                    "digits and dashes; it is also their work branch) — ask them")
+        asksecret = getattr(mediator, "secret_asker", None)
+        if not callable(asksecret):
+            return ("error: the hub's password is typed in the hidden box — "
+                    "no secret channel here")
+        pw = asksecret(f"choose a password for '{owner}' on the team hub: ")
+        if not pw:
+            return "stopped: no password was given"
+        pw2 = asksecret("type the same password again: ")
+        ask = getattr(mediator, "asker", None) or getattr(mediator, "ask", None)
+        ans = {"teams.setup": "setup", "teams.owner_name": owner,
+               "teams.owner_password": pw, "teams.owner_password2": pw2 or "",
+               "teams.autostart": "on"}
+        if not SS._crypto_ok():
+            ans["teams.crypto"] = "no"
+            if ask is not None:
+                got = ask("[team] Teams needs the 'cryptography' library for "
+                          "its secure connection — install it now?",
+                          ["yes — install it", "no — not now"])
+                if str(got or "").startswith("yes"):
+                    ans["teams.crypto"] = "install"
+        if ask is not None:
+            try:
+                got = ask("[team] Start the team hub when this computer starts?",
+                          ["yes", "no — I'll open Aura to start it"])
+                ans["teams.autostart"] = "on" if str(got or "").startswith("yes") else "off"
+            except Exception:                    # noqa: BLE001
+                pass
+        lines = SS._team_save({}, ans)
+        if not teams.enabled():
+            return "Teams isn't set up: " + " ".join(lines)
+        return ("Aura Teams is set up — this computer is the team's hub. "
+                + " ".join(lines))
+
     def team_hub_start(args) -> str:
         """Start a team hub HERE. Everything by asking (the card describes it).
         """
         import os
         from .. import teams_server as TS
+        if not teams.enabled() and not _own_cfg():
+            return _set_up_here(args)
         name = str(args.get("team_name") or "").strip() or "our-team"
         if TS.running() and _own_cfg():
             return ("the team hub is already running here: "
@@ -1085,6 +1133,43 @@ def register(mediator: Mediator, dispatch: dict) -> None:
     mediator.register(ToolSpec("team_chat", BlastRadius.WRITE, lambda a: None,
                                always_ask=True, describe=describe_chat))
     dispatch["team_chat"] = team_chat
+    def team_reports(args) -> str:
+        """The work reports to the hub, on or off, when the user asks. Off
+        never needs a card (it only stops sharing); on shows one."""
+        cfg = teams.load_config()
+        if not cfg.get("aura_team"):
+            return "not on a team hub — there are no reports to switch"
+        on = bool(args.get("on"))
+        if on:
+            ask = getattr(mediator, "asker", None) or getattr(mediator, "ask", None)
+            got = ask("[team] Share your work with the team hub again — task "
+                      "started or finished, file names, test results, decisions "
+                      "and commits (never your chat, code or secrets)?",
+                      ["yes, share", "no, keep them off"]) if ask else None
+            if not str(got or "").startswith("yes"):
+                return "stopped: the reports stay off"
+        cfg["team.reports"] = on
+        teams.save_config(cfg)
+        return ("reports on: work facts (task started or finished, file names, "
+                "test results, decisions, commits) go to the hub again"
+                if on else "reports off: nothing about your work goes to the hub "
+                "until you turn them back on")
+
+    def team_my_tasks(args) -> str:
+        """The user's open tasks on the board: blocked, due. Titles are
+        written by people, so they come back as outside text."""
+        from .. import teams_board as B
+        try:
+            text = B.board_summary()
+        except Exception as e:                   # noqa: BLE001
+            return f"the board couldn't be read: {str(e)[:160]}"
+        return B.OUTSIDE_BANNER + text
+
+    mediator.register(ToolSpec("team_my_tasks", BlastRadius.READ, lambda a: None),
+                      plan_safe=True)
+    dispatch["team_my_tasks"] = team_my_tasks
+    mediator.register(ToolSpec("team_reports", BlastRadius.WRITE, lambda a: None))
+    dispatch["team_reports"] = team_reports
     mediator.register(ToolSpec("team_status", BlastRadius.READ, lambda a: None), plan_safe=True)
     dispatch["team_status"] = team_status
     mediator.register(ToolSpec("team_wiring_format", BlastRadius.READ, lambda a: None), plan_safe=True)

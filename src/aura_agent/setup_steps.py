@@ -731,7 +731,7 @@ def _team_asks(ctx) -> list:
                  ("connect", "Connect to a team hub"),
                  ("later", "Not now")],
                 default="later",
-                why="until one finishes, no team tools reach the model, no "
+                why="until one finishes, Aura only offers to set Teams up — no "
                     "TEAM panel, nothing moves anywhere"),
             Ask("teams.owner_name", "Your username — the owner of this team hub",
                 [], default=_team_default(), when="teams.setup=setup",

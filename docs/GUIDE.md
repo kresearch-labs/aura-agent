@@ -9,6 +9,7 @@ Everything in detail. The short version is in the [README](../README.md).
 - [Running on its own](#running-on-its-own)
 - [Measuring](#measuring)
 - [Feature switches](#feature-switches)
+- [Aura Teams](#aura-teams)
 - [Ecosystem](#ecosystem)
 
 ## Install in detail
@@ -250,6 +251,294 @@ Python/JSON/TOML file unparseable is flagged at once), **minimal** (syntax
 note + proof), **recommended** (all on), **off** (none). Safety —
 approvals, skill-pack limits, protected files, scope and your hooks — is
 never a switch.
+
+## Aura Teams
+
+Aura Teams lets several people work on one project, each with their own
+Aura. One computer on your network hosts the team's **hub**: a small
+server with a web page. Everyone opens the page in a browser and connects
+their Aura to it. Nothing goes through an outside server or a cloud
+account.
+
+Teams is part of Aura but stays off until you set it up. Until then Aura
+knows it has Teams and offers to set it up when you talk about working with
+others — but there is no team panel, no team work, and nothing is sent
+anywhere. The first time Aura starts without Teams it mentions it once.
+
+- [Set up the hub](#set-up-the-hub)
+- [Add people](#add-people)
+- [Connect your Aura](#connect-your-aura)
+- [Work on a task](#work-on-a-task)
+- [What Aura shares, and what it never shares](#what-aura-shares-and-what-it-never-shares)
+- [The hub's pages](#the-hubs-pages)
+- [Your account](#your-account)
+- [Admin](#admin)
+- [Who can see what](#who-can-see-what)
+- [Outside apps](#outside-apps)
+- [Running the hub](#running-the-hub)
+- [Limits and safety](#limits-and-safety)
+
+### Set up the hub
+
+On the computer that will host the hub, tell Aura **"set up Teams"** (or
+open Aura's setup and choose *Team work*). Aura asks, with cards:
+
+1. whether this computer hosts the team's hub or joins one — choose to
+   host it;
+2. your name on the team — lowercase letters, digits and dashes; it is also
+   the name of your work branch;
+3. a password, typed twice in a hidden box (Aura's model never sees it);
+4. whether the hub starts when this computer starts. If you say no, it
+   starts when you open Aura.
+
+If the computer is missing the `cryptography` library the hub needs for
+its secure connection, Aura asks before installing it.
+
+You are the hub's **owner**. Aura shows the page's address, for example
+`https://192.168.1.20:7443/team/`, and the address teammates on your
+network use. Open it and sign in with your name and password.
+
+The browser warns about the hub's certificate the first time. That is
+expected: the hub makes its own certificate instead of buying one, and each
+Aura pins it, so a different server pretending to be your hub is refused.
+
+### Add people
+
+In **Admin › Users › Add person**, give each teammate a name and a first
+password. The page then shows a message to send them — the hub's address,
+their name and password, and what to do next. The page doesn't keep the
+password; copy the message before you close it.
+
+At their first sign-in, the hub asks them to choose their own password
+before anything else.
+
+New people are in no project yet. Add them to projects in **Admin ›
+Projects** (with a role), or in **Admin › Access**.
+
+### Connect your Aura
+
+Each person tells their own Aura **"connect me to my team at <address>"**.
+Aura asks for their name and password (hidden box), checks the hub, and
+registers this computer as one of their devices. The password is used once
+and not kept; from then on Aura signs its messages with a key that stays on
+this computer.
+
+Aura connects only to an address *you* typed in your own message — an
+address found in a web page or a file is refused.
+
+Once connected, Aura's chat screen shows a **TEAM** panel: whether the hub
+is online, the task this chat is working on, clashes with other people's
+work, and updates waiting to be sent.
+
+### Work on a task
+
+Name a board task in your request — for example **"#3 fix the login"**.
+If you don't, and the request looks like one of your tasks, Aura asks
+"This looks like #3 … — is it that one?", lets you pick from your open
+tasks, or offers to add the work to the board as a new task. You can always
+answer "it isn't on the board" and work without it.
+
+The first time, if the folder isn't linked to a team project yet, Aura asks
+which project it belongs to.
+
+While it works, Aura:
+
+- works on a branch with your name, so people never overwrite each other's
+  work;
+- tells the hub when the task starts, which files it changes and whether
+  the tests passed;
+- warns you when someone else's Aura is changing the same files, before it
+  becomes a merge conflict;
+- asks before starting a task that is waiting on another unfinished task;
+- when the work is done, commits only the task's own files, pushes the
+  branch and marks the task done.
+
+Ask Aura **"what are my team tasks?"** to see what is yours. A chat stays
+linked to its task until the task is done.
+
+If the hub can't be reached, Aura keeps the updates in order on your
+computer and sends them when the hub is back.
+
+### What Aura shares, and what it never shares
+
+Aura sends the hub **work facts only**:
+
+| What | When |
+|---|---|
+| task started (and its branch) | when you start working on a task |
+| file changed (the path, lines added and removed) | after each change |
+| tests ran (passed or failed, counts, and the test tool's name — never the command line) | after each test run |
+| a decision (one line, and why) | when Aura records one |
+| task blocked (and by which task) | when a task waits on another |
+| task finished (files changed, proof, commit, pushed) | at the end |
+
+Never sent: your chat with Aura, your prompts, file contents, code, or
+secrets. Paths of secret-looking files (`.env*`, keys, certificates,
+credentials) and of generated or dependency folders (`node_modules`,
+`build`, `.venv` and the like) are never named.
+
+To stop sharing, tell Aura **"turn the team reports off"** — it stops at
+once. Turning them back on asks you first.
+
+### The hub's pages
+
+The sidebar holds the pages, your projects, and your name. **Ctrl+K** (⌘K
+on a Mac) opens search: jump to any page, project, task or person.
+
+**Now** — your day: the tasks you have open, what is due today, and what
+your Aura and the team did last. Someone whose Aura isn't connected yet
+sees how to connect it.
+
+**Board** — the project's tasks in columns: To do, In progress, In review,
+Done, then Backlog. A project admin can rename, recolour or reorder the columns.
+
+- Each card shows the number, title, labels, due date, priority and the
+  people on it — and what their Aura is doing right now ("working", "waiting
+  for …", "finished · 3 files changed"), plus a warning when someone else's
+  Aura changed the same files.
+- **New task** (or a column's **+**) opens a form: title, description,
+  column, assignees, priority, labels, start and due dates, and which tasks
+  it waits on. Tick *Make another* to add several in a row.
+- Click a card to open it: edit any field, comment, attach files, and link
+  it to other tasks (*blocked by*, *relates to*, *duplicates*). Its activity
+  is listed underneath. If someone changed the task while you were editing,
+  the page shows both versions instead of overwriting theirs.
+- Shift- or Ctrl-click cards to select several; right-click a card to change
+  its column, assignees, labels or priority, or delete it. A deleted task can
+  be undone for a few seconds.
+- **list** shows the same tasks as a table; **timeline** opens Flow.
+
+**Tree** — the project's files as a folder tree, with who is working in
+which file now. Filter by path (press `/`), expand or collapse everything.
+
+**Flow** — the whole project in time:
+
+- one lane per person (or per task — your choice), each task a
+  bar from start to finish, with what happened on it (files, test runs,
+  finishes);
+- arrows from a task to the ones waiting on it, and marks where two people
+  worked in the same files;
+- zoom in and out, **Fit** to see everything, **Now** to jump to today;
+- a diagram of how the tasks depend on each other (or of the project's
+  parts), which you can copy as text.
+
+**History** — every change to the project, newest first, filtered by person,
+kind or words. Each entry is chained to the one before it, so a changed or
+deleted entry shows. People who may, can check the chain and export the
+history.
+
+**Chat** — a room for each project plus `#general`, and direct messages
+from the people list.
+
+- Pictures show in the message (click one for the full-size viewer); other
+  files show as cards. Up to 200 MB a file.
+- `@name` mentions someone (they are told wherever they are); `#12` shows
+  that task's live card.
+- Reply, react, edit or delete your own messages; search the chat.
+- **Enter** sends and **Shift+Enter** starts a new line (you can swap them in
+  your account). An unsent message waits for you as a draft.
+
+**Admin** — for the owner and admins; see [Admin](#admin).
+
+The page works on a phone too, for anyone on the same network.
+
+### Your account
+
+Click your name in the sidebar.
+
+- **Profile** — your display name and your avatar: a drawn face (two styles,
+  shuffle until you like one) or a photo (PNG, JPEG or WebP, up to 2 MB).
+- **Appearance** — the look (follow the system, Graphite dark, Soft light,
+  or Ink), the accent colour (teal, violet, amber or blue), comfortable or
+  compact spacing, more contrast, less motion, and which key sends a chat
+  message. These are kept in this browser.
+- **Password** — *Change password* in the menu under your name; your other
+  sessions are signed out when you change it.
+- **Sessions** — where you are signed in; sign out one, or all others.
+- **Linked devices** — the Auras connected as you; revoke one and it stops
+  working with the hub at once.
+
+### Admin
+
+**Users** — everyone on the team. Add a person (with the invite message),
+set a new password for someone, unlock someone locked out, or sign them
+out. Each person has a **team role** — owner, admin or user — and admins can
+give a user the global role *staff and projects manager* (may make projects
+and add people, never act over admins).
+
+**Access** — choose a person, then one of their projects: change their role
+there, and switch single areas (Board, Now, Tree, Flow, History, Chat, Aura
+work) on or off for that person in that project only. "Back to role" undoes
+your changes for that area.
+
+**Projects** — create a project; for each: its name and description,
+members and their roles, which areas the project uses (switch an area off
+for everyone), its board columns (names, colours, order), the main branch Aura merges into, linked
+chat rooms and notices, and exporting its history.
+
+**Roles** — the built-in Reader, Member and Project admin, plus your own.
+Each role is a set of ticks per area (for example Board: view, add, edit,
+move, comment, attach, delete). Changing a role changes it for everyone who
+has it; built-in roles can be reset to default; your own can be deleted.
+
+**Hub** — this hub's address and certificate fingerprint, backups (and
+*Back up now*), team webhooks, a metrics key, the history chain's latest
+entry, optional add-ons, importing from Vikunja, and moving the hub.
+
+### Who can see what
+
+- People see only the projects they are members of. The owner and admins
+  see all of them.
+- In each project a person has one role; what the role allows, minus any
+  area switched off for the project or for that person, is what they can do.
+- The hub enforces all of it — the pages only show what the hub allows, and
+  a request for something you may not see is refused, including chat rooms
+  and live updates.
+
+### Outside apps
+
+- **Linked rooms** (Projects) — join a project's chat room with a channel in
+  Slack, Discord, Microsoft Teams, Telegram or any webhook-based app:
+  messages go out, and messages from the other side come in marked with
+  where they came from. Tokens and addresses are kept on the hub, never
+  shown again.
+- **Notices** (Projects) — send a project's work events (task started,
+  finished or blocked, test runs, decisions, and two people in the same
+  files) to a channel.
+- **Webhooks** (Hub) — the owner or an admin sends chosen projects' events
+  to an address, signed so the receiver can check they came from your hub;
+  failed deliveries are retried.
+
+### Running the hub
+
+- **Address** — the hub listens on port 7443 by default, on this computer's
+  network address. Teammates need to reach that address: on the same
+  network it usually just works; a firewall may ask once whether to allow
+  it.
+- **Starting** — if you chose to start it with the computer, it does
+  (Windows, macOS and Linux each in their own way). Otherwise it starts when
+  you open Aura. Change it by running setup again.
+- **Backups** — the hub backs itself up when it starts and then daily, and
+  keeps the newest 14.
+- **Moving the hub** — the owner can move the hub to another computer: Aura
+  seals everything for the receiving person's device and their Aura opens
+  it there. The hub signs its new address, and each teammate's Aura checks
+  that signature before using it.
+
+### Limits and safety
+
+| | |
+|---|---|
+| Connection | HTTPS with the hub's own certificate, pinned by every Aura |
+| Passwords | stored as scrypt hashes, never in plain text; Aura never keeps yours |
+| Wrong passwords | 20 in a row lock that name for 30 minutes — from the address that guessed only, so nobody can lock a teammate out; a locked name gets the same answer as a wrong password |
+| Sign-in speed | at most 10 tries a minute from one address |
+| Sessions | a browser left unused for 7 days is signed out; the cookie can't be read by page scripts or sent by other sites |
+| Requests from other sites | refused: changes must come from the hub's own page |
+| Chat files | up to 200 MB each |
+| Avatar photos | up to 2 MB |
+| Outside links | never sent to this computer's own services; the other side's replies are never shown as data |
+| History | every entry chained to the one before, so changes show |
 
 ## Ecosystem
 

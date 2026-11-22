@@ -411,7 +411,39 @@ def build_agent(eng: Path, profile_name: str | None):
     except Exception as _e:                        # noqa: BLE001
         from .eventlog import log_swallowed
         log_swallowed("cli.keystore_warn", _e)
+    # Aura Teams, once: someone who never set it up hears that it exists
+    try:
+        _intro = teams_intro_once()
+        if _intro:
+            from . import ui
+            ui.info(_intro)
+    except Exception as _e:                        # noqa: BLE001
+        from .eventlog import log_swallowed
+        log_swallowed("cli.teams_intro", _e)
     return profile, m, loop
+
+
+TEAMS_INTRO = ("New: Aura Teams — work with others on one project: a shared "
+               "board, chat and a live view of everyone's work. Say \"set up "
+               "Teams\" when you want it.")
+
+
+def teams_intro_once() -> str | None:
+    """The Teams line, the first time only, and only while Teams is off."""
+    try:
+        from .editions import teams_present
+    except ImportError:                   # A build where Teams is always there
+        def teams_present() -> bool:
+            return True
+    from . import teams
+    if not teams_present() or teams.enabled():
+        return None
+    cfg = teams.load_config()
+    if cfg.get("intro_shown"):
+        return None
+    cfg["intro_shown"] = True
+    teams.save_config(cfg)
+    return TEAMS_INTRO
 
 
 def _kill_watch(eng: Path, state: dict):

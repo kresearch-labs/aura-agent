@@ -562,10 +562,9 @@ def _options() -> list[Option]:
                       words=("terminal", "conpty", "pty", "windows", "background", "prompt")))
     g, s = _plain("teams.enabled")
     out.append(Option("teams.enabled", "Teams", "Teams",
-                      "off until Teams is set up: no team tools for the model, "
-                      "no TEAM panel, no work events, /team answers 'not set "
-                      "up'. Flips only when 'aura setup teams' takes this "
-                      "machine to its own hub or connects it to one",
+                      "off until Teams is set up: Aura only offers to set it "
+                      "up, no TEAM panel, no work events. Turns on when setup "
+                      "makes this computer the team's hub or connects it to one",
                       "bool", False, getter=g, setter=s,
                       words=("team", "board", "tasks", "hub", "shared")))
     return out

@@ -21,6 +21,43 @@ PAGE = 100
 TASK_FIELDS = ("title", "description", "status", "priority", "start", "due")
 
 
+class _BadWhen(ValueError):
+    pass
+
+
+def _when(v):
+    """A task's start/due as the page reads it. Nothing given = no date. Anything
+    else is refused, never stored.
+    """
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool):
+        raise _BadWhen("a date is a day like 2026-11-25")
+    if isinstance(v, (int, float)):
+        return float(v)
+    import datetime as _dt
+    t = str(v).strip()
+    try:
+        return float(t)
+    except ValueError:
+        pass
+    try:
+        d = _dt.date.fromisoformat(t[:10])
+    except ValueError:
+        raise _BadWhen("a date is a day like 2026-11-25") from None
+    return _dt.datetime(d.year, d.month, d.day, 12).timestamp()
+
+
+def _prio(v) -> int:
+    try:
+        n = int(v or 0)
+    except (TypeError, ValueError):
+        raise _BadWhen("priority is a number from 0 to 4") from None
+    if not 0 <= n <= 4:
+        raise _BadWhen("priority is a number from 0 to 4")
+    return n
+
+
 
 def _num(v, default=0):
     """hostile-shape-safe int; garbage → default (never a 500)."""
@@ -191,6 +228,11 @@ def task_create(handler, match, body) -> None:
             handler._error(400, "no such column in this project")
             return
         status0 = row["key"]
+    try:
+        start0, due0, prio0 = _when(req.get("start")), _when(req.get("due")), _prio(req.get("priority"))
+    except _BadWhen as e:
+        handler._error(400, str(e))
+        return
     now = store.now()
     with store.write(conn):
         n = conn.execute(
@@ -201,8 +243,7 @@ def task_create(handler, match, body) -> None:
             " priority, start, due, created_by, created, updated)"
             " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (pid, n, title, str(req.get("description") or "")[:20000],
-             status0, int(req.get("priority") or 0), req.get("start"),
-             req.get("due"), actor["person_id"], now, now))
+             status0, prio0, start0, due0, actor["person_id"], now, now))
         tid = cur.lastrowid
         for mid in member_ids:                # Proven above, every name
             conn.execute("INSERT OR IGNORE INTO task_assignees (task,"
@@ -338,8 +379,13 @@ def task_patch(handler, match, body) -> None:
         status_to = key
     for f in ("priority", "start", "due"):
         if f in req:
+            try:
+                val = _prio(req[f]) if f == "priority" else _when(req[f])
+            except _BadWhen as e:
+                handler._error(400, str(e))
+                return
             fields.append(f"{f} = ?")
-            args.append(req[f])
+            args.append(val)
     if req.get("merged") is not None:
         fields.append("merged_at = ?")
         fields.append("merged_by = ?")

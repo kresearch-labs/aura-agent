@@ -2804,6 +2804,11 @@ class AgentLoop:
         # Tools found after the list was fixed — described at the end of the
         # call (the tail never breaks the server's cache)
         _tl = getattr(self, "tool_list", None)
+        if _tl is not None:
+            try:
+                _tl.team_ready()          # Teams set up in this chat: its tools join
+            except Exception:             # noqa: BLE001
+                pass
         _wn = _tl.waiting_note() if _tl is not None else ""
         if _wn:
             messages = messages + [{"role": "system", "content": _wn}]
