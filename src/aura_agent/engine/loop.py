@@ -2426,8 +2426,8 @@ class AgentLoop:
             self.m.turn_readonly = True
             if kind == "question":
                 self.on_event("notice", {"text": (
-                    "a question — Aura answers it; anything it would change, it asks "
-                    "you first"), "calm": True})
+                    "a question — Aura answers it; before writing to your files, it "
+                    "asks you first"), "calm": True})
         if not talk and (kind == "task" or self._reply):
             self._ledger_open(task, reply=bool(self._reply))   # Talk and questions open no task
         # model switch: the session's base prompt follows the ACTIVE model
