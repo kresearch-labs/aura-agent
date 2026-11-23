@@ -41,7 +41,8 @@ _DEF = (r"^\s*(?:export\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:static\s+)?
 
 
 def _rg() -> str | None:
-    return shutil.which("rg")
+    from ..paths import rg_path
+    return rg_path()
 
 
 # ---------------------------------------------------------------- ignore --
@@ -298,8 +299,36 @@ def _score_name(rel: str, q: str) -> float:
     return 0
 
 
+def _files_rg(root: Path, sub: Path) -> list[str] | None:
+    """Every file under sub, by ripgrep (fast, .gitignore-aware) — or None."""
+    rg = _rg()
+    if not rg:
+        return None
+    cmd = [rg, "--files", "--no-require-git", "--hidden", "--glob", "!.*/"]
+    for d in sorted(SKIP_DIRS):
+        cmd += ["--glob", f"!{d}/"]
+    try:
+        rel_sub = str(Path(sub).resolve().relative_to(Path(root).resolve())) or "."
+    except ValueError:
+        rel_sub = "."
+    cmd += ["--", rel_sub]
+    from ..stopping import run as _run_stoppable
+    try:
+        r = _run_stoppable(cmd, cwd=str(root), timeout=30, what="search_files")
+    except Exception:                                    # noqa: BLE001
+        return None
+    out = getattr(r, "stdout", "") or ""
+    if isinstance(out, bytes):
+        out = out.decode("utf-8", errors="replace")
+    if getattr(r, "returncode", 1) not in (0, 1):
+        return None
+    return [ln.strip().replace("\\", "/").lstrip("./") for ln in out.splitlines() if ln.strip()]
+
+
 def _names(root: Path, sub: Path, query: str, globs: list[str], limit: int) -> str:
-    rels = [r for r in _walk(root, sub) if _globs_ok(r, globs) and not _secret(r)]
+    found = _files_rg(root, sub)
+    rels = [r for r in (found if found is not None else _walk(root, sub))
+            if _globs_ok(r, globs) and not _secret(r)]
     scored = []
     for r in rels:
         s = _score_name(r, query) if query not in ("", "*") else 1

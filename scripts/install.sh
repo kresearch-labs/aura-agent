@@ -26,6 +26,7 @@
 set -eu
 
 UV_VERSION="0.12.24"
+RG_VERSION="15.2.0"     # ripgrep: Aura's fast search (github.com/BurntSushi/ripgrep)
 PYTHON_VERSION="3.12"
 EXTRAS=""
 AURA_REPO="kresearch-labs/aura-agent"
@@ -54,7 +55,7 @@ AURA_HOME="${AURA_HOME:-$HOME/.aura}"
 BIN_DIR="${UV_TOOL_BIN_DIR:-$HOME/.local/bin}"
 LOG="$AURA_HOME/install.log"
 STEP=0
-STEPS=5
+STEPS=6
 
 STARTED=0                     # nothing is written before you say go
 say() { printf '%s\n' "$*"; if [ "$STARTED" = 1 ]; then printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; fi; }
@@ -220,6 +221,39 @@ else
   cp "$FOUND" "$UV"
   chmod +x "$UV"
   detail "  checked (SHA-256) and placed: $UV"
+fi
+
+# --------------------------------------------------------------- ripgrep --
+# Aura's search runs on ripgrep. Static builds (Linux: musl) so one file works
+# on every distribution. If it can't be fetched, Aura uses its own search.
+step "ripgrep $RG_VERSION (fast search)"
+case "$OS-$ARCH" in
+  Linux-x86_64)   RG_T=x86_64-unknown-linux-musl;  RG_SUM=33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c ;;
+  Linux-aarch64)  RG_T=aarch64-unknown-linux-musl; RG_SUM=800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915 ;;
+  Darwin-x86_64)  RG_T=x86_64-apple-darwin;        RG_SUM=af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1 ;;
+  Darwin-aarch64) RG_T=aarch64-apple-darwin;       RG_SUM=3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4 ;;
+  *) RG_T="" ;;
+esac
+RG="$AURA_HOME/bin/rg"
+if [ -x "$RG" ] && "$RG" --version 2>/dev/null | grep -q "ripgrep $RG_VERSION"; then
+  detail "  already here: $RG"
+elif [ -z "$RG_T" ]; then
+  dim "no ripgrep build for this system — Aura uses its own search"
+else
+  RG_URL="https://github.com/BurntSushi/ripgrep/releases/download/$RG_VERSION/ripgrep-$RG_VERSION-$RG_T.tar.gz"
+  if $FETCH "$TMP/rg.tar.gz" "$RG_URL" >>"$LOG" 2>&1 &&      [ "$($HASH "$TMP/rg.tar.gz" | cut -d' ' -f1)" = "$RG_SUM" ]; then
+    mkdir -p "$TMP/rgx"
+    tar -xzf "$TMP/rg.tar.gz" -C "$TMP/rgx" >>"$LOG" 2>&1
+    RG_FOUND=$(find "$TMP/rgx" -type f -name rg | head -n 1)
+    if [ -n "$RG_FOUND" ]; then
+      cp "$RG_FOUND" "$RG" && chmod +x "$RG"
+      detail "  checked (SHA-256) and placed: $RG"
+    else
+      dim "ripgrep wasn't in the archive — Aura uses its own search"
+    fi
+  else
+    dim "couldn't get ripgrep (or its checksum didn't match) — Aura uses its own search"
+  fi
 fi
 
 # ------------------------------------------------------- python + aura --

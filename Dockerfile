@@ -51,6 +51,8 @@ ENV PATH=/opt/aura/bin:$PATH \
 RUN case ",${EXTRAS}," in *,web,*) \
         PLAYWRIGHT_BROWSERS_PATH=/opt/playwright /opt/aura/bin/python -m playwright install --with-deps chromium \
         && chmod -R a+rX /opt/playwright ;; esac \
+ && apt-get update && apt-get install -y --no-install-recommends ripgrep \
+ && rm -rf /var/lib/apt/lists/* \
  && useradd --create-home --uid 1000 aura \
  && mkdir -p /data /work && chown aura:aura /data /work
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright

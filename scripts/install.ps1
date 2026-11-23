@@ -29,6 +29,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $UvVersion = "0.12.24"
+$RgVersion = "15.2.0"     # ripgrep: Aura's fast search (github.com/BurntSushi/ripgrep)
 $Sums = @{                      # published SHA-256 of each uv $UvVersion archive
     "x86_64-pc-windows-msvc"  = "7c38608c8a18ee137d748a1773053b07ec8f3a30fab49aebaa6f4e4efeceb019"
     "aarch64-pc-windows-msvc" = "4b783bda5cc44bbae0651a837223873a7acee31152381aef5fc86ef6bef25997"
@@ -40,7 +41,7 @@ $AuraHome = if ($env:AURA_HOME) { $env:AURA_HOME } else { Join-Path $env:USERPRO
 $BinDir = if ($env:UV_TOOL_BIN_DIR) { $env:UV_TOOL_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $Log = Join-Path $AuraHome "install.log"
 $script:Step = 0
-$Steps = 5
+$Steps = 6
 # piped (irm | iex) there is no script file: stopping must not close the window
 $FromFile = [bool]$PSCommandPath
 $Interactive = [Environment]::UserInteractive -and -not $Yes -and [Console]::In -ne $null -and -not [Console]::IsInputRedirected
@@ -190,6 +191,47 @@ function Invoke-AuraInstall {
             if (-not $found) { Card "uv wasn't in the archive" "" "run again" }
             Copy-Item $found.FullName $Uv -Force
             Detail "  checked (SHA-256) and placed: $Uv"
+        } finally {
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        }
+    }
+
+    # ----------------------------------------------------------- ripgrep --
+    # Aura's search runs on ripgrep; if it can't be fetched, Aura uses its own.
+    Step "ripgrep $RgVersion (fast search)"
+    $RgSums = @{
+        "x86_64-pc-windows-msvc"  = "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"
+        "aarch64-pc-windows-msvc" = "e4abca10c3a64ebea742667dd7009449d49403db5460dd6873e389fa2945360f"
+    }
+    $Rg = Join-Path $AuraHome "bin\rg.exe"
+    $rgOk = $false
+    if (Test-Path $Rg) {
+        try { $rgOk = ((& $Rg --version 2>$null | Out-String) -match "ripgrep $RgVersion") } catch { $rgOk = $false }
+    }
+    if ($rgOk) {
+        Detail "  already here: $Rg"
+    } else {
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("aura-rg-" + [Guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        try {
+            $url = "https://github.com/BurntSushi/ripgrep/releases/download/$RgVersion/ripgrep-$RgVersion-$Target.zip"
+            $zip = Join-Path $tmp "rg.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+            $got = (Get-FileHash -Algorithm SHA256 -Path $zip).Hash.ToLower()
+            if ($got -ne $RgSums[$Target]) {
+                Dim "ripgrep's checksum didn't match - Aura uses its own search"
+            } else {
+                Expand-Archive -Path $zip -DestinationPath (Join-Path $tmp "x") -Force
+                $found = Get-ChildItem -Path (Join-Path $tmp "x") -Recurse -Filter "rg.exe" | Select-Object -First 1
+                if ($found) {
+                    Copy-Item $found.FullName $Rg -Force
+                    Detail "  checked (SHA-256) and placed: $Rg"
+                } else {
+                    Dim "ripgrep wasn't in the archive - Aura uses its own search"
+                }
+            }
+        } catch {
+            Dim "couldn't get ripgrep - Aura uses its own search"
         } finally {
             Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
         }

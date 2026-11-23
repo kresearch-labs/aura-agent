@@ -449,9 +449,19 @@ def locate(workspace: Path, args: dict) -> str:
     except Exception:                                    # noqa: BLE001
         in_aura = False
 
+    from ..paths import resolve_user_path
+    if query and ("/" in query or "\\" in query):
+        got, note = resolve_user_path(query)
+        if got.exists():
+            return ((note + "\n") if note else "") + f"found: {got}"
     try:
         # 1. the folder named, else the folder Aura works in
-        first = Path(os.path.expanduser(where)) if where else (None if in_aura else ws)
+        if where:
+            first, note = resolve_user_path(where)
+            if note:
+                said.append(note)
+        else:
+            first = None if in_aura else ws
         if first is not None and not everywhere:
             progress(f"looking in {first}")
             if not first.is_dir():
@@ -478,6 +488,19 @@ def locate(workspace: Path, args: dict) -> str:
                     else "no file index answered (none on this computer, or it is off)")
         if m.empty:
             return _answer_recent(hits, limit, said)
+        # nearby: the folder around the project (its parent and siblings),
+        # a short walk — never the whole computer without a yes
+        if first is not None and first.parent != first:
+            progress(f"looking near it, in {first.parent}")
+            n, _late = _walk([first.parent], m, hits, QUICK_WALK, skip_system=True,
+                             skip={os.path.normcase(str(first))})
+            said.append(f"looked nearby in {first.parent} ({n} folders)")
+        if not everywhere:
+            if not len(hits):
+                said.append("not found nearby — the whole computer was NOT searched. "
+                            "To search it, call locate with everywhere=true: the user is "
+                            "asked first (it can take minutes)")
+            return _answer(hits, limit, said)
         # good matches already: a short walk (the closest folders, where an
         # unindexed exact match usually is); none: the full time limit
         budget = QUICK_WALK if hits.strong() and not thorough else WALK_BUDGET
@@ -571,5 +594,11 @@ def _answer(hits: _Hits, limit: int, said: list[str], more: bool = False,
 
 
 def register(mediator: Mediator, dispatch: dict, workspace: Path) -> None:
-    mediator.register(ToolSpec(LOCATE, BlastRadius.READ, lambda a: None), plan_safe=True)
+    def _ask(a):
+        if a.get("everywhere"):
+            return ("it searches the whole computer — every drive, folder by folder "
+                    "(can take minutes)")
+        return None
+    mediator.register(ToolSpec(LOCATE, BlastRadius.READ, lambda a: None, ask_when=_ask),
+                      plan_safe=True)
     dispatch[LOCATE] = lambda a: locate(Path(getattr(mediator, "work_dir", None) or workspace), a)

@@ -175,3 +175,59 @@ def unsafe_workspace(folder: Path) -> str | None:
     if not os.access(f, os.W_OK):
         return "a folder you can't write to"
     return None
+
+
+# ------------------------------------------------------------ ripgrep --
+def rg_path() -> str | None:
+    """ripgrep for search: the copy the installer put in Aura's bin folder,
+    else one on PATH, else None (Aura's own search is used then)."""
+    import shutil
+    own = aura_home() / "bin" / ("rg.exe" if os.name == "nt" else "rg")
+    if own.is_file():
+        return str(own)
+    return shutil.which("rg")
+
+
+# ------------------------------------------------ paths people type --
+def _is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text(errors="replace").lower()
+    except OSError:
+        return False
+
+
+def path_candidates(raw: str) -> list[str]:
+    r"""What a path the user typed may really be on THIS machine: as typed,
+    then a Windows path seen from WSL (C:\x -> /mnt/c/x), a WSL or Git-Bash
+    path seen from Windows (/mnt/c/x, /c/x -> C:\x), and a WSL path that left
+    out its /mnt/<drive> (/Users/x -> /mnt/c/Users/x)."""
+    import glob as _glob
+    import sys as _sys
+    p = os.path.expanduser(str(raw or "").strip().strip('"').strip("'"))
+    out = [p]
+    wsl = _sys.platform.startswith("linux") and _is_wsl()
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", p)
+    if wsl and m:
+        out.append(f"/mnt/{m.group(1).lower()}/" + m.group(2).replace("\\", "/"))
+    if os.name == "nt":
+        m2 = re.match(r"^/(?:mnt/)?([a-zA-Z])/(.*)$", p)
+        if m2:
+            out.append(f"{m2.group(1).upper()}:\\" + m2.group(2).replace("/", "\\"))
+    if wsl and p.startswith("/") and not p.startswith("/mnt/"):
+        out += [d + p for d in sorted(_glob.glob("/mnt/[a-z]"))]
+    seen, uniq = set(), []
+    for c in out:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    return uniq
+
+
+def resolve_user_path(raw: str) -> tuple[Path, str]:
+    """(the path that exists, a note when it had to be translated) — or the
+    path as typed and "" when none of the candidates exists."""
+    cands = path_candidates(raw)
+    for c in cands:
+        if c and Path(c).exists():
+            return Path(c), ("" if c == cands[0] else f"{raw} is {c} on this machine")
+    return Path(cands[0] if cands else raw), ""
