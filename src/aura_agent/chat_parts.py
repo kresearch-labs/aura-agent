@@ -473,6 +473,9 @@ def recall(chat_path: Path, args: dict) -> str:
     return body
 
 
+EXACT_COPY = ('Asked to repeat something word for word? Copy it exactly, inside a code block: no added quote marks (>), no new line breaks, nothing reworded.')
+
+
 def _recall(chat_path: Path, args: dict) -> str:
     p = Path(chat_path)
     cur = current_part(p)
@@ -488,7 +491,7 @@ def _recall(chat_path: Path, args: dict) -> str:
         body = _render(recs)
         if len(body) > RECALL_MAX_CHARS:
             body = body[:RECALL_MAX_CHARS] + "\n[… cut — ask a smaller window]"
-        return body or f"nothing at #{seq} in this chat"
+        return (body + "\n[" + EXACT_COPY + "]") if body else f"nothing at #{seq} in this chat"
     if args.get("query"):
         q = list(dict.fromkeys(w.lower() for w in re.findall(r"[\w.\-]+", str(args["query"]))
                                if w.lower() not in _STOP))
@@ -662,11 +665,13 @@ def decisions_block(chat_path: Path, all_: bool = False,
             # the warning comes first and the fact reads as the past: a model
             # skims the end of a line, not its tail notes
             why = "; ".join(_words(by_id[d]["text"], 12) for d in i["doubt"][:2])
-            text = f"MAY BE OUTDATED (since: {why}) — was: {text}"
+            text = f"MAY BE OUTDATED (since: {why}) — {text}"
         s = (f"- {i['id']} ({when}{', #' + str(i['seq']) if i.get('seq') else ''}"
              f"{', fact' if i.get('kind') == 'fact' else ''}): {text}")
         if i.get("replaces"):
-            s += f" [replaces {i['replaces']}]"
+            old = by_id.get(i["replaces"], {})
+            s += (f" [replaces {i['replaces']}: \"{_words(old.get('text', ''), 24)}\" — "
+                  "no longer true]" if old.get("text") else f" [replaces {i['replaces']}]")
         if i["status"] != "active":
             s += (f" — REPLACED by {i.get('replaced_by')}" if i.get("replaced_by")
                   else " — dropped")
@@ -679,14 +684,15 @@ def decisions_block(chat_path: Path, all_: bool = False,
     upto = facts_through(chat_path)
     age = (f" as of message #{upto['seq']} ({time.strftime('%Y-%m-%d', time.localtime(upto['ts']))})"
            if upto.get("seq") else "")
-    return (f"[NOTED IN THIS CHAT{age} — decisions and facts about the user, newest first. A "
-            "summary, not proof: " + ("what was said after that message is not in it yet, and "
-                                      if age else "") +
-            "any value may have changed since. When an answer depends on one of these, check the "
-            "chat first (recall query=words, then seq=N); the newest thing said wins. An entry "
-            "marked MAY BE OUTDATED is never stated as current: say what was true and that "
-            "the change since may have affected it, or ask. Never use or repeat what is "
-            "marked FORGOTTEN, even if the chat still has it]\n" + body)
+    return (f"[WHAT IS TRUE NOW in this chat{age} — facts and decisions about the user, "
+            "newest first. These are CURRENT: answer from them and state them plainly as "
+            "current. An entry that replaces another means the old one is no longer true — "
+            "even if the user's message or an older quote still says it. The user's own "
+            "'if … then …' rules are decisions they already made. Only an entry marked MAY BE "
+            "OUTDATED is unsure: check the chat (recall) for what is current. "
+            + ("Something said after that message wins over this list. " if age else "")
+            + "Never use or repeat what is marked FORGOTTEN, even if the chat still has it. "
+            + EXACT_COPY + "]\n" + body)
 
 
 # ------------------------------------------------------ facts cursor --
@@ -736,15 +742,23 @@ FACTS_INSTRUCTIONS = (
     "health, routines, schedules, plans, preferences, and decisions. Only the user's own "
     "situation: skip topics they merely asked about or researched, general knowledge, "
     "and what the assistant said.\n"
-    "Above all catch CHANGES. When something new makes a listed entry false or outdated, "
-    "replace that entry with the new state.\n"
-    "Knock-on effects: for EVERY add or replace that changes the user's situation (job, "
-    "home, health, team, tool, system, plan, relationship), go through the WHOLE current "
-    "list and put in \"affects\" the ids of every entry the change could make untrue — "
-    "routines, places, schedules, people, tools, settings and arrangements that depended "
-    "on the old state — even though the user never mentioned them. When unsure, include "
-    "it: it is only marked 'may be outdated', not removed. If a later message gives the "
-    "new value of such an entry, replace it.\n"
+    "Above all catch CHANGES — also the ones the user never names. A later message often "
+    "makes a listed entry false without mentioning it: moving house (neighbours, commute), "
+    "a new job or shift (schedule, routines), a reinstall or wipe (files kept only "
+    "locally), a new belief, diet or health condition, a new partner or a breakup. "
+    "For each new message, go through the list and ask: is this entry still true after "
+    "what the user just said? If not, REPLACE it with what is true now, plainly (\"works "
+    "from home since the new job — no longer takes the morning train\", \"the weekly call "
+    "is now at 6 p.m. local time, after the move\"). Never leave the old value listed as "
+    "current next to its replacement.\n"
+    "The user's own rules (\"if X changes, Y will be Z\") are decisions: keep the rule. "
+    "When a later message shows X happened, REPLACE the entry for Y with Z as the "
+    "current value and say why (\"eating out: none for now — the user's rule once the "
+    "rent went up\"). A rule is never outdated because its own condition "
+    "happened.\n"
+    "\"affects\": only an entry about the SAME thing that the change may have made untrue "
+    "when you cannot tell its new value. Not entries about other topics that merely "
+    "happened around the same time. When unsure, leave it out.\n"
     "Forgetting: EVERY message that asks to forget, delete, remove or stop keeping "
     "something gets a \"forget\" change — also when no current entry holds it (the chat "
     "itself still does). Give the id of the entry if one is listed, and a short topic that "
@@ -991,3 +1005,30 @@ def _just_a_question(text: str) -> bool:
     """A message that only asks (short, with a '?'): repeating it tells nothing."""
     t = " ".join((text or "").split())
     return "?" in t and len(t) < 160
+
+
+def premise_note(chat_path: Path, message: str) -> str:
+    """The message assumes something this chat's list says is NO LONGER TRUE
+    (it repeats the words of a replaced entry): a code-made note with what
+    replaced it — so the answer follows what is true now, not the message."""
+    words = set(_content_words(message or "", 200))
+    if len(words) < 3:
+        return ""
+    items = decisions_state(chat_path)
+    by_id = {i["id"]: i for i in items}
+    out = []
+    for i in items:
+        if i.get("status") != "replaced" or not i.get("replaced_by"):
+            continue
+        old = set(_content_words(i.get("text", ""), 200))
+        shared = words & old
+        if len(shared) >= 3 and len(shared) >= 0.5 * max(1, len(old)):
+            new = by_id.get(i["replaced_by"], {})
+            when = time.strftime("%Y-%m-%d", time.localtime(float(i.get("replaced_ts") or 0)))
+            out.append(f"- the message assumes: \"{_words(i.get('text', ''), 30)}\" — that is NO "
+                       f"LONGER TRUE: since {when}: \"{_words(new.get('text', ''), 30)}\"")
+    if not out:
+        return ""
+    return ("[CHECK THE MESSAGE — found by code] The user's message assumes something that "
+            "changed in this chat. Answer from what is true now, and say plainly that it "
+            "changed:\n" + "\n".join(out[:3]))

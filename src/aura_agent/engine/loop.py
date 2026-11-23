@@ -2917,6 +2917,34 @@ class AgentLoop:
                         self._auto_text = auto_recall(Path(session.path), task)
                     if getattr(self, "_auto_text", ""):
                         project_part.append({"role": "system", "content": self._auto_text})
+                if getattr(session, "path", None):
+                    _pkey = (str(session.path), task)
+                    if getattr(self, "_premise_for", None) != _pkey:
+                        from ..chat_parts import premise_note
+                        self._premise_for = _pkey
+                        self._premise_text = premise_note(Path(session.path), task)
+                        if self._premise_text:
+                            # Gated: only when the message leans on a changed fact —
+                            # one side call works out what is true now for THIS message.
+                            try:
+                                from ..chat_parts import decisions_block
+                                _res = self._side_chat(
+                                    self.llm,
+                                    "Using only the facts list and the note below, say in at "
+                                    "most 3 short lines what is TRUE NOW for the user's "
+                                    "message: the current value, what it replaced, and any "
+                                    "rule of the user's that now applies. No advice, no "
+                                    "answer to the message itself.",
+                                    decisions_block(Path(session.path)) + "\n\n"
+                                    + self._premise_text + "\n\nThe message:\n" + task)
+                                _now = (getattr(_res, "content", "") or "").strip()
+                                if _now:
+                                    self._premise_text += ("\n[WHAT IS TRUE NOW — worked out "
+                                                           "for this message]\n" + _now[:1200])
+                            except Exception as _swallowed:      # noqa: BLE001
+                                log_swallowed("loop.premise_now", _swallowed)
+                    if getattr(self, "_premise_text", ""):
+                        project_part.append({"role": "system", "content": self._premise_text})
             except Exception as _swallowed:
                 log_swallowed("loop.auto_recall", _swallowed)
         # Skills: only the person's PINNED skills are listed every turn; the
