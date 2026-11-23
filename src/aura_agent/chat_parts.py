@@ -42,7 +42,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-PART_TOKENS = 24_000          # A part holds about this much chat
+PART_TOKENS = 100_000         # A chat file holds about this much chat
 CHARS_PER_TOKEN = 4
 CARRY_TOKENS = 5_000          # The end of a closed part the next one starts with
 DECISIONS_MAX_CHARS = 8_000   # The list sent with every call (~2k tokens)
@@ -98,11 +98,42 @@ def current_part(chat_path: Path) -> int:
 
 
 def head_tokens(chat_path: Path) -> int:
-    """About how much chat the current part holds."""
+    """About how much NEW chat the current part holds — what was carried over
+    from the part before (the model's view) doesn't count again."""
+    total = 0
     try:
-        return Path(chat_path).stat().st_size // CHARS_PER_TOKEN
+        with Path(chat_path).open(encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if '"carried": true' in ln:
+                    continue
+                total += len(ln)
     except OSError:
         return 0
+    return total // CHARS_PER_TOKEN
+
+
+def dropped_list(chat_path: Path, keep_exchanges: int, max_lines: int = 60) -> str:
+    """What left the model's view at its limit, made by code from the index
+    (one bookmark per exchange, written as it happened) — never a summary."""
+    p = Path(chat_path)
+    rows = index_entries(p)
+    rows = rows[:-keep_exchanges] if 0 < keep_exchanges < len(rows) else (
+        [] if keep_exchanges >= len(rows) else rows)
+    if not rows:
+        return ""
+    older = ""
+    if len(rows) > max_lines:
+        masters = master_entries(p)
+        if masters:
+            older = "Older chat files:\n" + "\n".join(m.get("line", "") for m in masters[-40:]) + "\n"
+    return ("[EARLIER IN THIS CHAT — left out of view to fit the model; nothing was "
+            "summarized] These exchanges are no longer in view; each line is a bookmark "
+            "written as it happened. All of it is in this chat's files, word for word: "
+            "recall query=words searches them, recall seq=N opens the exact spot. Do not "
+            "guess a detail you don't see — recall it. The decisions list shows what is "
+            "true now (newest wins).\n"
+            + older + "Left out, oldest first:\n"
+            + "\n".join(r.get("line", "") for r in rows[-max_lines:]))
 
 
 # ---------------------------------------------------------- index lines --

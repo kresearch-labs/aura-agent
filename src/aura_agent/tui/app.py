@@ -874,9 +874,16 @@ class ChatApp:
             elif name == "context trim" and (self.verbose or self.state.get("debug_raw")):
                 self.say(cells.notice_cell(f"{name}: {det}" if det else name, s, w, "info"))
         elif kind == "compaction":
-            self.say(cells.notice_cell("older messages summarized to make room "
-                                       "(your rules are kept word for word)", s, w, "info"))
-            self._ctx_why = "older messages summarized"
+            if d.get("pruned"):
+                self.say(cells.notice_cell(
+                    "the model's limit was reached — the oldest part of this chat left its view "
+                    "(nothing summarized; it's all in the chat's files, found when needed)",
+                    s, w, "info"))
+                self._ctx_why = "oldest part of the chat left the model's view"
+            else:
+                self.say(cells.notice_cell("older messages summarized to make room "
+                                           "(your rules are kept word for word)", s, w, "info"))
+                self._ctx_why = "older messages summarized"
             self.ctx_used = 0                  # Re-measured now, not at the next reply
         elif kind == "reviewer_error":
             self.say(cells.notice_cell("the second-opinion reviewer failed: "

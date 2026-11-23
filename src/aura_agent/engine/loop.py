@@ -1214,7 +1214,7 @@ class AgentLoop:
         segs = TV.segments(session.messages)
         earlier = segs[:-1]
         if TV.greeting(task):                    # "hi": no earlier task, no call
-            return (TV.hidden(session.messages, set(), earlier) if earlier else {}), "chat"
+            return {}, "chat"
         shown = earlier[-TV.MAX_SHOWN:]          # Older tasks: not needed
         base = len(earlier) - len(shown)
         try:
@@ -1234,13 +1234,8 @@ class AgentLoop:
         related = {base + n for n in related}
         if TV.points_back(task):                 # "do it", "that one": never alone
             related |= set(range(max(1, len(earlier) - TV.KEEP_NEWEST + 1), len(earlier) + 1))
-        view = TV.hidden(session.messages, related, earlier)
-        if view and kind == "task":
-            n = len(earlier) - len(related)
-            self.on_event("notice", {"text": (
-                f"new task — {n} earlier task{'s' if n > 1 else ''} in this chat "
-                "left out (not needed for this one)")})
-        return view, kind
+        # the whole chat stays in view (it leaves only at the model's limit)
+        return {}, kind
 
     def _steer_kind(self, task: str, msg: str) -> str:
         """A message typed while the task runs: question, change or later
@@ -1726,12 +1721,12 @@ class AgentLoop:
                 if not stopped and CP.says_change(said):
                     self._facts_pass(Path(path), "a change was mentioned")
                 return
-            master = session.roll_part(CP.carry_records(Path(path)))
+            view = [m for m in session.messages if m.get("role") != "system"]
+            master = session.roll_part(view, note=False)
             if master:
                 self.on_event("notice", {"text": (
-                    f"this chat's part {master['part']} is full — kept unchanged and indexed; "
-                    f"the chat goes on in part {master['part'] + 1} (recall finds anything "
-                    "earlier, word for word)"), "calm": True})
+                    f"chat file {master['part']} saved and indexed — the chat goes on "
+                    f"in file {master['part'] + 1}; nothing left the model's view"), "calm": True})
                 self._facts_pass(Path(path), f"part {master['part']} closed")
         except Exception as _swallowed:              # noqa: BLE001
             log_swallowed("loop.chat_parts", _swallowed)   # Never stops the chat
@@ -2777,7 +2772,23 @@ class AgentLoop:
                         "search_files) instead of the whole file.")}]
             self._thrash_told = told
         # Governor gate — compact when over 60% of ctx window
-        if self.governor and self.governor.needs_compaction(messages):
+        if self.governor and self._parts_on() and \
+                self.governor.count(messages) > int(self.governor._usable() * 0.95):
+            from ..notes import is_users_words as _iuw
+            _tail = self.governor.prune_oldest(messages)
+            _keep_ex = sum(1 for m in _tail.kept if _iuw(m))
+            try:
+                from ..chat_parts import dropped_list
+                _left = dropped_list(Path(session.path), _keep_ex)
+            except Exception:                            # noqa: BLE001
+                _left = ""
+            c = self.governor.prune_oldest(messages, state=_left)
+            messages = Governor.as_messages(c)
+            self._reads_seen = {}
+            self.session_persist_compact(session, c)
+            self.on_event("compaction", {"step": step, "dropped": c.dropped,
+                                         "verbatim_kept": 0, "pruned": True})
+        elif self.governor and not self._parts_on() and self.governor.needs_compaction(messages):
             _parts = self._parts_on()
             _state = self._task_state(task, messages)
             if _parts:

@@ -538,7 +538,7 @@ class Session:
         self.settings = state["settings"]
         return str(snap)
 
-    def roll_part(self, keep: list[dict]) -> dict | None:
+    def roll_part(self, keep: list[dict], note: bool = True) -> dict | None:
         """This part is full: move it into the parts folder unchanged and start
         the next one with the chat's own records, the code-made start note and
         `keep` (the last exchange, word for word). Returns the finished part's
@@ -565,7 +565,8 @@ class Session:
         self.part = info["part"] + 1
         system = [m for m in self.messages if m.get("role") == "system"]
         self.messages = list(system)
-        self.note(CP.start_note(self.path, info["part"]))
+        if note:
+            self.note(CP.start_note(self.path, info["part"]))
         for m in keep:
             kw = {k: v for k, v in m.items() if k in _MSG_KEYS and k != "role" and v is not None}
             self.seq += 1

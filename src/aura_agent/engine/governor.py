@@ -267,6 +267,34 @@ class Governor:
                                 dropped=len(to_summarize),
                                 verbatim_lines=verbatim)
 
+    def prune_oldest(self, messages: list[dict], state: str = "",
+                     keep_frac: float = 0.25) -> CompactionResult:
+        """At the model's limit: the oldest part of the chat leaves the view
+        as it is — nothing summarized. The newest ~keep_frac of the usable
+        context stays word for word (whole exchanges, never an orphan tool
+        result); `state` (the code-made list of what left) takes the place of
+        any earlier one."""
+        if not messages:
+            return CompactionResult([], {"role": "system", "content": ""}, 0)
+        system = [m for m in messages if m["role"] == "system" and not _is_summary(m)]
+        rest = [m for m in messages if m["role"] != "system"]
+        budget = max(1, int(self._usable() * keep_frac))
+        used, cut = 0, len(rest)
+        for i in range(len(rest) - 1, -1, -1):
+            used += self.count([rest[i]])
+            if used > budget and i < len(rest) - 1:
+                break
+            cut = i
+        # the kept part starts on the user's own words when it can
+        j = cut
+        while j < len(rest) and not is_users_words(rest[j]):
+            j += 1
+        if j < len(rest):
+            cut = j
+        cut = self._safe_cut(rest, cut)
+        summary = {"role": "system", "content": (state + "\n" if state else "") + COMPACT_TAG}
+        return CompactionResult(kept=system + rest[cut:], summary_msg=summary, dropped=cut)
+
     # -------------------------------------------------------- LLM compact
     # Recall-first ordering: within the summary body, scope statement and
     # approvals FIRST, current check LAST; findings and artifacts between.

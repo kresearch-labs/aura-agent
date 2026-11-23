@@ -524,10 +524,10 @@ def _options() -> list[Option]:
                       words=("memory", "long chat", "parts", "index", "compaction", "summary",
                              "decisions", "forget", "remember")))
     g, s = _plain("memory.part_tokens")
-    out.append(Option("memory.part_tokens", "Memory", "size of a chat part (tokens)",
-                      "how much chat one part holds before it is put away and indexed — "
-                      "the same on every model, so a small and a big model keep the same parts",
-                      "int", 24000, lo=8000, hi=200000, getter=g, setter=s,
+    out.append(Option("memory.part_tokens", "Memory", "size of a chat file (tokens)",
+                      "how much new chat one file holds before it is put away and indexed — "
+                      "only how the chat is stored; what the model sees never changes there",
+                      "int", 100000, lo=8000, hi=1000000, getter=g, setter=s,
                       words=("memory", "parts", "size", "tokens", "long chat")))
     g, s = _plain("memory.facts")
     out.append(Option("memory.facts", "Memory", "keep the chat's facts up to date",
