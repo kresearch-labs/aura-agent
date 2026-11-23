@@ -128,6 +128,17 @@ def register(mediator: Mediator, dispatch: dict,
                 raise Violation(
                     f"banned command token '{tok}' (allowlist override available)")
         timeout = float(args.get("timeout", mediator.budgets.per_call_timeout))
+        _reg_bg = getattr(mediator, "_procs", None)
+        if str(args.get("background", "")).lower() in ("1", "true", "yes") and _reg_bg is not None:
+            # long work: straight to the background list (same command rules as
+            # process_start); the chat is free, Aura is told when it ends
+            out = _reg_bg.start(cmd, name=str(args.get("name") or ""), ready={},
+                                timeout=5,
+                                network=str(args.get("network", "")).lower() in ("1", "true", "yes"))
+            return (out + "\nIt is STILL RUNNING — how it ends is NOT known yet; never say "
+                    "or guess its result. Tell the user it is running in the background and "
+                    "end your turn (unless there is other work). Aura itself tells you when "
+                    "it has really ended.")
         _site_ok = _site_ok_for(mediator)
         _handoff_token = None
         try:

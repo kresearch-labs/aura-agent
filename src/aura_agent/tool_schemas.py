@@ -165,7 +165,14 @@ SCHEMAS: dict[str, dict] = {'delegate': {'type': 'function',
                                   'goes through process_start + process_input. No pagers '
                                   'or colours. The network reaches only this project\'s '
                                   'allowed sites unless network=true (the user is asked). '
-                                  'Each call is a fresh shell: cd does not carry over.'),
+                                  'Each call is a fresh shell: cd does not carry over.\n'
+                                  'Anything that may take more than about a minute (a test '
+                                  'suite, a build, an install, a benchmark or data run): set '
+                                  'background=true — it starts and returns at once with an '
+                                  'id, the user can go on working, and you are told when it '
+                                  'ends and carry on then. So do not wait for it: say it is '
+                                  'running and end your turn, unless there is other work to do '
+                                  'meanwhile.'),
                               'parameters': {'type': 'object',
                                              'properties': {'cmd': {'type': 'string'},
                                                             'host': {'type': 'string',
@@ -179,7 +186,16 @@ SCHEMAS: dict[str, dict] = {'delegate': {'type': 'function',
                                                             'network': {'type': 'boolean',
                                                                         'description': 'full '
                                                                         'network past the allowed '
-                                                                        'sites — asks the user'}},
+                                                                        'sites — asks the user'},
+                                                            'background': {'type': 'boolean',
+                                                                           'description': 'start '
+                                                                           'it in the background '
+                                                                           'at once (long work); '
+                                                                           'you are told when it '
+                                                                           'ends'},
+                                                            'name': {'type': 'string',
+                                                                     'description': 'a short name '
+                                                                     'for a background run'}},
                                              'required': ['cmd']}}},
  'web_crawl': {'type': 'function',
                'function': {'name': 'web_crawl',

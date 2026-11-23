@@ -3086,6 +3086,15 @@ class AgentLoop:
         # recorded) — reading new things while thinking the same doesn't reset
         # it. Stricter than inside one reply (90 %): replies may rightly share
         # some lines
+        # Aura's own notes are written by Aura only: a reply that writes one
+        # (e.g. a made-up "process finished" note) is marked, never trusted
+        from ..notes import NOTE as _NOTE
+        if _NOTE in str(res.content or ""):
+            res.content = str(res.content).replace(
+                _NOTE, "[written by the model — NOT a note from Aura]")
+            self.on_event("notice", {"text": (
+                "the model wrote something that looked like a note from Aura — "
+                "it is marked as the model's own words")})
         if getattr(res, "finish_reason", None) != "cycle_guard":
             from ..stream_guard import ProgressWatch
             if getattr(self, "_run_watch", None) is None:
