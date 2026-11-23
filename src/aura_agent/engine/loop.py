@@ -1187,10 +1187,10 @@ class AgentLoop:
         return "TALK" if talk else ("ASK" if kind in ("question", "chat") else "TASK")
 
     def _talk_only(self) -> bool:
-        """Only reading tools this turn: discuss mode, or a message that only asks
-        a question.
-        """
-        return getattr(self.m, "mode", "act") == "discuss" or bool(getattr(self.m, "turn_readonly", False))
+        """Only reading tools this turn: discuss mode (the user chose it). A
+        question gets every tool — anything that would change something is
+        asked with a card first (mediator)."""
+        return getattr(self.m, "mode", "act") == "discuss"
 
     def _check_on(self) -> bool:
         """The message check (task_view.py) runs: not for a helper's run, and
@@ -2426,8 +2426,8 @@ class AgentLoop:
             self.m.turn_readonly = True
             if kind == "question":
                 self.on_event("notice", {"text": (
-                    "a question — Aura answers it and changes nothing (say what to do "
-                    "if you want it done)"), "calm": True})
+                    "a question — Aura answers it; anything it would change, it asks "
+                    "you first"), "calm": True})
         if not talk and (kind == "task" or self._reply):
             self._ledger_open(task, reply=bool(self._reply))   # Talk and questions open no task
         # model switch: the session's base prompt follows the ACTIVE model

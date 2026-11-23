@@ -239,10 +239,10 @@ class Mediator:
             raise Violation(f"discuss mode: '{name}' would change something — the user only "
                             "wants to talk. Answer in words; if they want it done, say "
                             "/discuss off lets you do it")
-        if getattr(self, "turn_readonly", False) and spec.blast_radius != BlastRadius.READ:
-            self._audit(name, args, "REFUSED_MODE", None)
-            raise Violation(f"'{name}' would change something, and the user only asked a "
-                            "question — answer it in words; if they want it done they'll say so")
+        # A question turn: reading runs freely; anything that could change
+        # something is ASKED with a card (below), never refused outright
+        _question_turn = (getattr(self, "turn_readonly", False)
+                          and spec.blast_radius != BlastRadius.READ)
         # Assist levels, as the assist menu describes them: L1 asks before
         # every write/execute (a saved grant can pre-approve) L2 asks only
         # before G3 — can't be undone or reaches outside L3 never asks (what L2
@@ -303,6 +303,9 @@ class Mediator:
                 ask_why = spec.ask_when(args)
             except Exception:
                 ask_why = "this call could not be checked — asking to be safe"
+        if not ask_why and _question_turn:
+            ask_why = ("you asked a question — this would do something, not just look "
+                       "(yes: do it now)")
         # Commands: asked by WHAT they do, not which site they name. Reading
         # and downloading for the work never ask; running outside code asks
         # once per task; sending things out asks every time; what the rules
