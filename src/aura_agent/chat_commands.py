@@ -280,7 +280,9 @@ def _pick_chats(ctx, chats: list[dict], title: str):
     for s in chats[:40]:
         full = (f"{min(999, round(100 * s['tokens'] / ctx_n))}% full" if ctx_n
                 else f"~{s['tokens'] // 1000}k tokens")
-        options.append((("★ " if s.get("pinned") else "") + _chat_name(s)[:44], s["file"],
+        from .session_store import chat_path
+        options.append((("★ " if s.get("pinned") else "") + _chat_name(s)[:44],
+                        str(chat_path(s, ctx.eng) or ctx.eng / "sessions" / s["file"]),
                         f"#{s.get('id', '')} · {s['messages']} msgs · {full} · used {_ago(s['used_ts'])}"
                         f" · made {_ago(s['made_ts'])}",
                         s["file"] == ctx.session.path.name,
@@ -338,7 +340,7 @@ def _sessions(ctx, parts, line):
         pick = _pick_chats(ctx, [h for h, _ in hits], f"chats that say {q!r}")
         if pick is None:
             return Result()
-        return _switch(ctx, eng / "sessions" / pick)
+        return _switch(ctx, Path(pick))
 
     if sub in ("info", "show"):
         path = _one(ctx, " ".join(rest) or here)
@@ -453,7 +455,8 @@ def _sessions(ctx, parts, line):
         return _export_chat(ctx, path, fmt, dest)
 
     if sub in ("", "list", "sort", "archived"):
-        chats = list_sessions(eng)
+        from .session_store import list_all_sessions
+        chats = list_all_sessions(eng)
         if not chats:
             ui.info("no saved chats yet")
             return Result()
@@ -482,7 +485,7 @@ def _sessions(ctx, parts, line):
         pick = _pick_chats(ctx, chats, title)
         if pick is None:
             return Result()
-        return _switch(ctx, eng / "sessions" / pick)
+        return _switch(ctx, Path(pick))
 
     # /resume <#id | title | N | latest>
     path = _one(ctx, " ".join(parts[1:]))
@@ -499,6 +502,15 @@ def _switch(ctx, target) -> "Result":
     if target.name == ctx.session.path.name:
         ui.info(f"already in this chat (#{ctx.session.id})")
         return Result()
+    from .session_store import REOPEN, notebook_of
+    nb = notebook_of(target)
+    if nb.resolve() != Path(ctx.eng).resolve():
+        from .paths import workspace_for
+        ws = workspace_for(nb)
+        REOPEN.clear()
+        REOPEN.update(chat=str(target), folder=str(ws))
+        ui.info(f"this chat works in {ws} — reopening it there")
+        return Result(exit=True)
     ctx.session = Session(target)
     ctx.session.ensure_meta()
     ctx.open_session_settings(ctx.session)
@@ -523,11 +535,11 @@ def _trash_days() -> int:
 def _search_chats(eng, q: str) -> list:
     """Every message of every chat (not just the names), newest chat first;
     words in any order. [(chat, snippet)]."""
-    from .session_store import list_sessions
+    from .session_store import chat_path, list_all_sessions
     words = [w.lower() for w in q.split() if w]
     out = []
-    for s in list_sessions(eng):
-        p = eng / "sessions" / s["file"]
+    for s in list_all_sessions(eng):
+        p = chat_path(s, eng) or eng / "sessions" / s["file"]
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:

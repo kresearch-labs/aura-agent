@@ -1972,7 +1972,7 @@ def _chat_ref(eng, ref: str | None) -> tuple[str | None, int]:
         ui.warn(f"{len(many)} chats match {ref!r}: "
                 + ", ".join(f"#{s['id']}" for s in many[:6]) + " — give more of the id")
     else:
-        ui.warn(f"no chat {ref!r} in this project — `aura chat` then /resume lists them")
+        ui.warn(f"no chat {ref!r} — /resume in a chat lists them all")
     return None, 1
 
 
@@ -1993,6 +1993,20 @@ def cmd_chat(args) -> int:
         args.session, code = _chat_ref(eng, ref)
         if code:
             return code
+    if getattr(args, "session", None):
+        # A chat opens in its own folder, with everything it had there
+        from .session_store import notebook_of
+        nb = notebook_of(Path(args.session))
+        if nb.is_dir() and nb.resolve() != Path(eng).resolve():
+            from .paths import workspace_for
+            ws = workspace_for(nb)
+            try:
+                os.chdir(ws)
+                eng = nb
+                from . import ui as _ui
+                _ui.info(f"this chat works in {ws} — opened there")
+            except OSError:
+                pass
     # First-run gate (chat path) — only when no explicit profile/session
     if not getattr(args, "profile", None) and not getattr(args, "session", None):
         import sys as _sys
@@ -2000,9 +2014,37 @@ def cmd_chat(args) -> int:
         prof = ensure_working_profile(eng, interactive=_sys.stdout.isatty())
         if prof is not None:
             args.profile = prof.name
-    return chat(eng, args.profile, args.session, args.task,
-                name=getattr(args, "name", None),
-                fork=getattr(args, "fork", None))
+    rc = chat(eng, args.profile, args.session, args.task,
+              name=getattr(args, "name", None),
+              fork=getattr(args, "fork", None))
+    return _reopen_elsewhere(args, rc)
+
+
+def _reopen_elsewhere(args, rc):
+    """A chat picked from another folder: open Aura again there, in it."""
+    from .session_store import REOPEN
+    if not REOPEN.get("chat"):
+        return rc
+    import subprocess
+    import sys as _sys
+    want = dict(REOPEN)
+    REOPEN.clear()
+    argv = [_sys.executable, "-m", "aura_agent"]
+    given = _sys.argv[1:]                     # The same work profile as this launch
+    for i, a in enumerate(given):
+        if a in ("-p", "--profile") and i + 1 < len(given):
+            argv += [a, given[i + 1]]
+            break
+        if a.startswith("--profile="):
+            argv.append(a)
+            break
+    argv += ["chat", "--session", want["chat"]]
+    try:
+        return subprocess.call(argv, cwd=want["folder"])
+    except OSError as e:
+        from . import ui
+        ui.warn(f"couldn't reopen the chat there: {e}")
+        return rc
 
 
 def cmd_acp(args) -> int:

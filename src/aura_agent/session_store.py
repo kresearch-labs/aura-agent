@@ -205,9 +205,62 @@ def list_sessions(engagement_root: Path) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------- every chat --
+def notebooks() -> list[Path]:
+    """Every notebook of this profile that holds chats: the no-project one
+    and one per project folder."""
+    from .paths import no_project_dir, profile_dir
+    out = []
+    nop = no_project_dir()
+    if (nop / "sessions").is_dir():
+        out.append(nop)
+    proj = profile_dir() / "projects"
+    try:
+        out += [d for d in sorted(proj.iterdir()) if (d / "sessions").is_dir()]
+    except OSError:
+        pass
+    return out
+
+
+def list_all_sessions(current: Path | None = None) -> list[dict]:
+    """Every chat, whatever folder it worked in — one list, last used first.
+    Each row carries its notebook ("root"): a chat brings back its own folder."""
+    roots = notebooks()
+    seen = {r.resolve() for r in roots}
+    if current is not None and Path(current).resolve() not in seen             and (Path(current) / "sessions").is_dir():
+        roots.append(Path(current))            # A same-folder notebook
+    out = []
+    for r in roots:
+        for s in list_sessions(r):
+            s["root"] = str(r)
+            out.append(s)
+    out.sort(key=lambda s: s["used_ts"], reverse=True)
+    return out
+
+
+def chat_path(s: dict, fallback: Path | None = None) -> Path | None:
+    """The file of a listed chat."""
+    root = Path(s.get("root") or fallback or ".")
+    for base in (root / "sessions", root):
+        if (base / s["file"]).exists():
+            return base / s["file"]
+    return None
+
+
+def notebook_of(path: Path) -> Path:
+    """The notebook a chat file belongs to."""
+    p = Path(path)
+    return p.parent.parent if p.parent.name == "sessions" else p.parent
+
+
+# A chat picked from another folder: the chat screen closes and Aura reopens
+# in that chat's folder (set here, read by the chat command after the screen)
+REOPEN: dict = {}
+
+
 # ------------------------------------------------------------------ lookup --
-def resolve(engagement_root: Path, ref: str, include_archived: bool = True
-            ) -> tuple[Path | None, list[dict]]:
+def resolve(engagement_root: Path, ref: str, include_archived: bool = True,
+            everywhere: bool = True) -> tuple[Path | None, list[dict]]:
     """A chat from what the user typed: its id (#a1b2c3, or a unique start of it,
     like git), "latest", a number from the list, its title, or its file name.
     (path, []) found; (None, candidates) when several match; (None, []) when
@@ -215,15 +268,13 @@ def resolve(engagement_root: Path, ref: str, include_archived: bool = True
     """
     ref = (ref or "").strip()
     root = Path(engagement_root)
-    chats = [s for s in list_sessions(root) if include_archived or not s.get("archived")]
+    rows = list_all_sessions(root) if everywhere else list_sessions(root)
+    chats = [s for s in rows if include_archived or not s.get("archived")]
     if not ref or not chats:
         return None, []
 
     def path_of(s):
-        for base in (root / "sessions", root):
-            if (base / s["file"]).exists():
-                return base / s["file"]
-        return None
+        return chat_path(s, root)
 
     low = ref.lower()
     if low in ("latest", "last"):          # The newest you work in: not an archived one
