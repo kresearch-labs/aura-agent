@@ -407,6 +407,15 @@ def team_settings_patch(handler, match, body) -> None:
 
 
 def run(args) -> int:
+    try:
+        from .. import running as _running
+        _running.register("hub")
+    except Exception:                                    # noqa: BLE001
+        pass
+    return _run(args)
+
+
+def _run(args) -> int:
     from .http import Handler, make_server, serve_forever
     from . import tls as TL
     from .teamserver_db import team_dir, db_path

@@ -311,13 +311,38 @@ class ChatApp:
             if self.first_task:
                 self.submit(self.first_task)
             self.render()
+            _ask_at = 0.0
             while not self.quit:
                 self.step(timeout=0.08)
+                if time.time() - _ask_at > 1.0:
+                    _ask_at = time.time()
+                    self._stop_if_asked()
             return 0
         except KeyboardInterrupt:
             return 0
         finally:
             self._shutdown()
+
+    def _stop_if_asked(self) -> None:
+        """aura stop / aura restart asked this chat to close: it says so,
+        stops what it was doing and closes — saved, resume brings it back."""
+        try:
+            from .. import running as R
+            R.update(chat=getattr(self.ctx.session, "id", ""),
+                     title=getattr(self.ctx.session, "title", "") or "")
+            if not R.stop_requested():
+                return
+        except Exception:      # noqa: BLE001
+            return
+        try:
+            self.say(cells.notice_cell("Aura is being stopped or restarted — this chat "
+                                       "is saved; resume brings it back",
+                                       self.s, self.w, "info"))
+            if self.running:
+                self.interrupt()
+        except Exception:      # noqa: BLE001
+            pass
+        self.quit = True
 
     def _wire(self) -> None:
         prev = getattr(self.loop, "on_event", None)

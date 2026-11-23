@@ -1046,6 +1046,8 @@ def cmd_insights(args) -> int:
 
 def cmd_proxy(args) -> int:
     """3.14: local OpenAI-compatible proxy over the active profile."""
+    from . import running as _running
+    _running.register("proxy")
     from .proxy import serve
     return serve(host=args.host, port=args.port,
                  profile_name=getattr(args, "profile", None))
@@ -1053,6 +1055,8 @@ def cmd_proxy(args) -> int:
 
 def cmd_serve(args) -> int:
     """3.17: read-only engagement dashboard."""
+    from . import running as _running
+    _running.register("serve")
     from .serve_dash import serve
     return serve(engagement_dir(getattr(args, "serve_dir", None)),
                  host=args.host, port=args.port)
@@ -1100,7 +1104,7 @@ def cmd_completion(args) -> str:
     """4.2: emit shell completion (argparse-generated, stdlib)."""
     # argparse ships a completion emitter via argcomplete only; we emit a
     # static, always-correct script from the command table instead
-    cmds = ["run", "resume", "setup", "model", "update", "uninstall", "auth",
+    cmds = ["run", "resume", "setup", "stop", "restart", "model", "update", "uninstall", "auth",
             "stats", "send", "insights", "proxy", "serve", "fleet", "skills",
             "gateway", "doctor", "profiles", "init", "status", "selftest",
             "export", "report", "receipts-verify", "cron", "import-agent",
@@ -2014,6 +2018,11 @@ def cmd_chat(args) -> int:
         prof = ensure_working_profile(eng, interactive=_sys.stdout.isatty())
         if prof is not None:
             args.profile = prof.name
+    try:
+        from . import running as _running
+        _running.register("chat")
+    except Exception:                                    # noqa: BLE001
+        pass
     rc = chat(eng, args.profile, args.session, args.task,
               name=getattr(args, "name", None),
               fork=getattr(args, "fork", None))
@@ -2156,6 +2165,8 @@ def cmd_cron(args) -> int:
                     f" {r['job_id']} — {r.get('summary', '')[:80]}")
         return 0
     if args.cron_cmd == "watch":
+        from . import running as _running
+        _running.register("cron")
         from .cronops import cron_notebooks, watch
         nbs = cron_notebooks()
         ui.info(f"watching {len(nbs)} project(s) with scheduled jobs — "
@@ -2472,7 +2483,94 @@ def cmd_status(args) -> int:
     from .agent_status import render_agent_status
     eng = engagement_dir(args.dir)
     print(strip_glyphs(render_agent_status(eng)))
+    print("\n".join(_running_section()))
     return 0
+
+
+def _running_section() -> list[str]:
+    from . import running as R
+    rows = R.entries(include_self=False)
+    if not rows:
+        return ["running now: nothing else (no other chat or service is open)"]
+    return ["running now:"] + ["  " + R.describe(r) for r in rows]
+
+
+def _stop_all(force: bool, yes: bool, restart: bool) -> int:
+    """aura stop / aura restart: open chats are never closed blindly."""
+    from . import running as R, ui
+    rows = R.entries()
+    chats = [r for r in rows if r.get("kind") == "chat"]
+    services = [r for r in rows if r.get("kind") != "chat"]
+    hub_up = False
+    try:
+        from . import teams_server as TS
+        hub_up = TS.running() and not any(r.get("kind") == "hub" for r in services)
+    except Exception:                                    # noqa: BLE001
+        TS = None
+    if not rows and not hub_up:
+        print("nothing of Aura is running" + (" — nothing to restart" if restart else ""))
+        return 0
+    mode = "force" if force else ("safe" if yes else "")
+    if chats and not mode:
+        print(f"{len(chats)} chat{'s are' if len(chats) > 1 else ' is'} open:")
+        for r in chats:
+            print("  " + R.describe(r))
+        import sys as _sys
+        if not _sys.stdin.isatty():
+            print("close them first, or run again with --yes (close them safely) "
+                  "or --force (stop them at once)")
+            return 1
+        try:
+            ans = input("  [s] close them safely (each saves where it was) · "
+                        "[f] force (unsaved work in them is lost) · [c] cancel: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+            print()
+            print("no answer — run again with --yes (close them safely) or --force")
+        mode = {"s": "safe", "f": "force"}.get(ans[:1], "")
+        if not mode:
+            print("cancelled — nothing was stopped")
+            return 1
+    for r in chats + services:
+        R.ask_stop(int(r["pid"]))                  # Each is asked first, even with force
+    if chats and mode == "safe":
+        print("asking the open chats to save and close…")
+    left = R.wait_gone([int(r["pid"]) for r in chats + services],
+                       timeout=5.0 if mode == "force" else 30.0)
+    for pid in left:
+        R.force_stop(pid)
+    if left and mode == "safe":
+        ui.warn(f"{len(left)} didn't close in time and were stopped")
+    if hub_up and TS is not None:
+        TS.stop()
+    for r in chats:
+        print(f"  closed: {R.describe(r)}")
+    if not restart:
+        for r in services:
+            print(f"  stopped: {R.KINDS.get(r.get('kind'), r.get('kind'))}")
+        if hub_up:
+            print("  stopped: team hub")
+        if chats:
+            print("open Aura again and resume brings the chats back where they were")
+        return 0
+    again = services + ([{"kind": "hub"}] if hub_up else [])
+    for r in again:
+        ok = R.start_again(r)
+        what = R.KINDS.get(r.get("kind"), r.get("kind"))
+        print(f"  {'restarted' if ok else 'could not restart'}: {what}")
+    if chats:
+        print("the chats were saved — open Aura and resume brings them back")
+    return 0
+
+
+def cmd_stop(args) -> int:
+    return _stop_all(bool(getattr(args, "force", False)), bool(getattr(args, "yes", False)),
+                     restart=False)
+
+
+def cmd_restart(args) -> int:
+    return _stop_all(bool(getattr(args, "force", False)), bool(getattr(args, "yes", False)),
+                     restart=True)
 
 
 def _drop_teams_parser(sub) -> None:
@@ -2772,6 +2870,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="non-interactive: localhost-only lab scope")
     ini.set_defaults(fn=cmd_init)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    for _n, _fn, _h in (("stop", cmd_stop, "stop every running piece of Aura (open chats are asked first)"),
+                        ("restart", cmd_restart, "restart Aura's services (open chats are asked first)")):
+        _p = sub.add_parser(_n, help=_h)
+        _p.add_argument("--yes", action="store_true", help="close open chats safely (they save first)")
+        _p.add_argument("--force", action="store_true", help="stop open chats at once")
+        _p.set_defaults(fn=_fn)
     stg = sub.add_parser("settings", help="Aura's options: list, find, set, "
                                           "reset, undo (aura settings set "
                                           "edit.line_tags off)")

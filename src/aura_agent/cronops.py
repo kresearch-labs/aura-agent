@@ -364,7 +364,11 @@ def watch(on_result, tick_s: float = 60.0, once: bool = False) -> int:
                 on_result(nb, r)
         if once:
             return n
-        time.sleep(tick_s)
+        from .running import stop_requested
+        for _ in range(int(tick_s)):
+            if stop_requested():
+                return n
+            time.sleep(1)
 
 
 # ------------------------------------------------------------------ hooks --
