@@ -842,9 +842,13 @@ class ChatApp:
                 pass
         elif kind == "ctx_state":
             _before = int(getattr(self, "ctx_used", 0) or 0)
+            _was_measured = bool(getattr(self, "ctx_measured", False))
             self.ctx_used = int(d.get("used") or 0)
             self.ctx_measured = bool(d.get("measured"))       # The server's own count, not Aura's estimate
-            if _before >= 4000 and self.ctx_used < 0.7 * _before:
+            # only two real counts are compared: Aura's estimate turning into
+            # the server's count is not something left out
+            if _was_measured and self.ctx_measured and \
+                    _before >= 4000 and self.ctx_used < 0.7 * _before:
                 why = getattr(self, "_ctx_why", "") or "older parts left out of this call"
                 self._ctx_why = ""
                 self.say(cells.notice_cell(
@@ -3202,6 +3206,14 @@ class ChatApp:
             left.append(("context", s("faint", "context ") + s("dim", f"{mark}{cells.fmt_tokens(used)}")
                          + s("faint", f"/{cells.fmt_tokens(total)}") + " " + meter + " "
                          + s(role, f"{mark}{pct}%")))
+            # shorter forms for a narrow screen: the meter and percent stay
+            _short = s(role, s.g("meter_full") * max(1 if used else 0, round(fill / 2))) + \
+                s("faint", s.g("meter_empty") * (5 - max(1 if used else 0, round(fill / 2)))) + \
+                " " + s(role, f"{mark}{pct}%")
+            ctx_short = [s("dim", f"{mark}{cells.fmt_tokens(used)}")
+                         + s("faint", f"/{cells.fmt_tokens(total)}") + " " + _short, _short]
+        else:
+            ctx_short = []
         if "team" in want:                         # Aura Teams, when connected
             try:
                 from ..teams_ui import snapshot, status_mark
@@ -3248,6 +3260,11 @@ class ChatApp:
             left = [p for p in left if p[0] != name]
             right = [p for p in right if p[0] != name]
             line = build()
+        for short in ([] if line else ctx_short):        # Context only gets shorter
+            left = [("context", short) if p[0] == "context" else p for p in left]
+            line = build()
+            if line:
+                break
         return cut(line or (" " + sep.join(t for _, t in left)), w - 1)
 
     def _statusline_cmd(self, line: str) -> None:
