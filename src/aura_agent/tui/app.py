@@ -24,7 +24,7 @@ from pathlib import Path
 from .. import ui
 from ..chat_commands import ChatContext, dispatch
 from . import cells, history
-from .complete import FileIndex, Item, arg_items, command_items
+from .complete import FileIndex, Item, arg_items, command_items, looks_like_path, path_items
 from .editor import Editor
 from .keys import Key
 from .live import LiveRegion, LiveStdout
@@ -2530,6 +2530,9 @@ class ChatApp:
         elif token.startswith("@"):
             self.files.refresh()
             items = self.files.match(token[1:])
+        if not items and looks_like_path(token) and not (
+                text.startswith("/") and start == 0 and " " not in text):
+            items = path_items(token)              # A path, anywhere in the message
         if not items and force and text.startswith("/") is False and token.startswith("@"):
             items = self.files.match("")
         self.popup = items[:50]

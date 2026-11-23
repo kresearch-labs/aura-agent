@@ -6,6 +6,7 @@ cached; big folders (.git, node_modules, venvs, build output) are skipped.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -214,3 +215,63 @@ class FileIndex:
                 scored.append((sc - 5, Item("@" + d, d, "folder", "dir")))
         scored.sort(key=lambda x: (-x[0], len(x[1].label)))
         return [i for _, i in scored[:limit]]
+
+
+# ------------------------------------------------------------- paths --
+_PATH_START = re.compile(r"^(?:[A-Za-z]:(?:[\\/]|$)|~(?:[\\/]|$)|\.{1,2}[\\/]|/|\\\\)")
+
+
+def looks_like_path(token: str) -> bool:
+    r"""A word that is the start of a path: C: C:\x /home ~/ ./ ../ \\server"""
+    return bool(token) and bool(_PATH_START.match(token))
+
+
+def path_items(token: str, limit: int = 60) -> list[Item]:
+    """Folders and files that continue the path being typed (folders first).
+    The part already typed stays as typed; a folder ends with the separator
+    the user is using, so the list goes on into it."""
+    from ..paths import path_candidates
+    sep = "\\" if ("\\" in token or re.match(r"^[A-Za-z]:$", token)) else "/"
+    cut = max(token.rfind("/"), token.rfind("\\"))
+    if re.match(r"^[A-Za-z]:$", token):
+        typed_dir, part = token + sep, ""
+    elif cut >= 0:
+        typed_dir, part = token[:cut + 1], token[cut + 1:]
+    else:
+        typed_dir, part = token, ""
+    real = None
+    for cand in path_candidates(typed_dir):
+        try:
+            if os.path.isdir(cand):
+                real = cand
+                break
+        except OSError:
+            continue
+    if real is None:
+        return []
+    try:
+        names = os.listdir(real)
+    except OSError:
+        return []
+    low = part.lower()
+    scored: list[tuple[int, Item]] = []
+    for n in names:
+        if low and not n.lower().startswith(low):
+            sc = fuzzy_score(part, n) if len(part) > 1 else None
+            if sc is None:
+                continue
+        else:
+            sc = 2000 - len(n)
+        if n.startswith(".") and not part.startswith("."):
+            sc -= 500                                   # Hidden ones last
+        full = os.path.join(real, n)
+        is_dir = os.path.isdir(full)
+        ins = typed_dir + n + (sep if is_dir else "")
+        scored.append((sc + (300 if is_dir else 0),
+                       Item(ins, n + (sep if is_dir else ""), "folder" if is_dir else "",
+                            "dir" if is_dir else "file")))
+        if len(scored) > 2000:
+            break
+    scored.sort(key=lambda x: (-x[0], x[1].label.lower()))
+    return [it for _s, it in scored[:limit]]
+
